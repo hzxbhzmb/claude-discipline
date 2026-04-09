@@ -1,0 +1,9 @@
+.claude/rules/sdd/
+
+# macOS
+.DS_Store
+
+# 用户数据目录（由 plugin 在每个项目里 init 时自动创建，不入库）
+todo/
+methodology/
+research/
