@@ -2,6 +2,7 @@
 // SessionStart Hook: 初始化项目目录 + 注入纪律规则
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const projectDir = process.env.CLAUDE_PROJECT_DIR;
 const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
@@ -44,7 +45,18 @@ if (!fs.existsSync(indexFile)) {
   process.stderr.write('✓ 已创建 methodology/_index.md\n');
 }
 
-// 3. 注入纪律规则到会话上下文
+// 3. 清空上一次会话的证据日志（如果有 session_id 的话）
+//    证据日志在 /tmp/claude-evidence-${sessionId}.jsonl
+//    SessionStart 时 session_id 可能还不可用，所以这里用 glob 清理旧文件
+try {
+  const tmpDir = os.tmpdir();
+  const files = fs.readdirSync(tmpDir).filter(f => f.startsWith('claude-evidence-'));
+  for (const f of files) {
+    try { fs.unlinkSync(path.join(tmpDir, f)); } catch (e) {}
+  }
+} catch (e) {}
+
+// 4. 注入纪律规则到会话上下文
 const rulesFile = path.join(pluginRoot, 'rules', 'discipline.md');
 try {
   const rules = fs.readFileSync(rulesFile, 'utf8');
