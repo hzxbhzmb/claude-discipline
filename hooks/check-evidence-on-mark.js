@@ -3,6 +3,7 @@
 // 仅处理对 todo/current.md 的 Edit/Write 操作
 //
 // 检查 1：标记 [x] 时，自上次标记以来必须有非 todo 的工具调用
+// 检查 1b：标记 [x] 时，若子任务含 "research/" 则必须有对 research/ 的写入
 // 检查 2：写 ✅ 验算通过 时，自最后一个 [x] 以来必须有读取类工具调用
 if (process.env.CLAUDE_DISCIPLINE_BYPASS === '1') process.exit(0);
 
@@ -81,6 +82,32 @@ process.stdin.on('end', () => {
         }
       }));
       return;
+    }
+
+    // === 检查 1b：研究类子任务必须有对 research/ 的写入 ===
+    // 子任务文本中显式包含 "research/" 时触发
+    if (newStr.includes('research/')) {
+      const researchWrites = recentWork.filter(e =>
+        e.type === 'write' &&
+        (e.target.includes('/research/') || e.target.includes('\\research\\'))
+      );
+      if (researchWrites.length === 0) {
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PostToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: [
+              '🚫 标记 [x] 被拒绝：子任务要求写入 research/ 但未检测到对 research/ 目录的写入操作。',
+              '',
+              '规则：子任务中包含 "research/" 时，必须有对 research/ 目录的 Write/Edit 操作才能标记完成。',
+              '研究产出必须落地为文件，不能只在对话中输出。',
+              '',
+              '请先将研究产出写入 research/ 目录下的 .md 文件，然后再标记 [x]。',
+            ].join('\n')
+          }
+        }));
+        return;
+      }
     }
   }
 
