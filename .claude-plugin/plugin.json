@@ -8,6 +8,5 @@
   },
   "repository": "https://github.com/hzxbhzmb/claude-discipline",
   "license": "MIT",
-  "keywords": ["discipline", "todo", "methodology", "quality", "verification"],
-  "hooks": "./hooks/hooks.json"
+  "keywords": ["discipline", "todo", "methodology", "quality", "verification"]
 }
