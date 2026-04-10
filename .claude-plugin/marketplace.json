@@ -1,14 +1,15 @@
 {
+  "name": "claude-discipline",
+  "owner": {
+    "name": "hzxbhzmb"
+  },
   "metadata": {
-    "name": "claude-discipline",
-    "owner": "hzxbhzmb",
-    "description": "让 Claude Code 保持工作纪律：三次握手、证据链、四次挥手",
-    "version": "2.0.0"
+    "description": "让 Claude Code 保持工作纪律：三次握手、证据链、四次挥手"
   },
   "plugins": [
     {
       "name": "claude-discipline",
-      "source": ".",
+      "source": "./",
       "description": "让 Claude Code 保持工作纪律：任务管理、达标标准、完成验算、方法论积累",
       "version": "2.0.0",
       "keywords": ["discipline", "todo", "methodology", "quality", "verification"]
