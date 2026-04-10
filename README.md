@@ -98,6 +98,7 @@ cd claude-discipline
 | 检查点 | 触发条件 | 检查内容 | 不通过时 |
 |--------|---------|---------|---------|
 | 标记 `[x]` | 编辑 todo 将 `[ ]` 改为 `[x]` | 自上次标记以来是否有非 todo 的工具调用 | **拒绝操作** |
+| 研究类 `[x]` | 同上，且子任务文本含 `research/` | 证据日志中是否有对 `research/` 的写入 | **拒绝操作** |
 | 写验算通过 | 编辑 todo 写入 `✅ 验算通过` | 自最后一个 `[x]` 以来是否有读取/执行类工具调用 | **拒绝操作** |
 
 支持所有工具类型：Read、Edit、Write、Bash、Grep、Glob、MCP 工具等。
@@ -114,7 +115,7 @@ cd claude-discipline
 | **check-todo-line-count** | PostToolUse Edit/Write | todo 超 80 行 → **警告归档** |
 | **check-todo-acceptance** | PostToolUse Edit/Write | 任务段缺达标标准 → **警告** |
 | **check-todo-verification** | PostToolUse Edit/Write | 全 `[x]` 无验算行 → **拒绝** |
-| **check-evidence-on-mark** | PostToolUse Edit/Write | 标记 `[x]` 或写验算无工具证据 → **拒绝** |
+| **check-evidence-on-mark** | PostToolUse Edit/Write | 标记 `[x]` 或写验算无工具证据 → **拒绝**；研究类子任务还需有 `research/` 写入 |
 
 所有 hook 检查 `CLAUDE_DISCIPLINE_BYPASS=1` 环境变量——设置后跳过所有检查。
 
