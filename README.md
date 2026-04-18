@@ -154,6 +154,40 @@ cd claude-discipline
 - [ ] 子任务 2
 ```
 
+## 快车道模式（轻量任务豁免）
+
+三次握手是为**会改动项目状态、有风险、多步骤**的任务设计的。对简单任务（跑个 skill、单条命令、只读探索、单文件小改），全程走握手太重。以下三层豁免让轻量任务不受约束：
+
+### 1. 工具层天然豁免
+
+`check-handshake` 和 `check-todo-modified` 的 matcher 只匹配 `Edit|Write`。以下工具**不会触发握手检查**：
+
+- **Read / Grep / Glob**：只读探索随便用
+- **Bash**：运行命令、查状态、跑测试
+- **Skill / WebFetch / WebSearch / MCP 工具**：Skill 本身不触发（但 Skill 内部的 Edit/Write 仍受约束）
+
+### 2. 项目目录外的文件豁免
+
+`Edit` / `Write` 的 `file_path` 若位于 `CLAUDE_PROJECT_DIR` 之外（如 `~/Downloads/*`、`/tmp/*`），两个 hook 直接放行——不在 discipline 作用域。
+
+### 3. 关键词快车道（极简任务段）
+
+任务需要 Edit/Write 项目文件但**规模很小**时，可把三次握手压缩成一步：
+
+```markdown
+## YYYY-MM-DD — 任务简述 <!-- session: xxxxxxxx -->
+
+**用户意图**：{一句话复述}
+
+> ✅ 执行授权：[快车道] {说明做什么、为什么简单}
+```
+
+跳过 AI 理解、验算方案、子任务列表。只要有 `> ✅ 执行授权` 行就能过 hook。
+
+**触发条件**：用户措辞含`快速 / 直接 / 小改 / 不用握手 / 一句话 / 跑一下 / 简单`，或任务特征为单命令 / 单 skill / 只读探索 / 单文件 ≤10 行改动。
+
+**必须走重档的场景**：多文件改、研究 / 调研、重构、配置 / 基础设施变更、删除 / 不可回滚操作、用户质疑 AI 理解——这些场景即使用户说"快速"也要完整握手。
+
 ## 证据链
 
 插件通过 Hook 记录**每一次工具调用**（工具名、操作目标、时间戳）到会话证据日志（JSONL 格式）。这是硬数据，AI 无法伪造。
@@ -249,7 +283,7 @@ methodology/ 采用**渐进式披露**设计：
 
 ### 白名单
 
-`hooks/check-todo-modified.js` 和 `hooks/check-handshake.js` 中定义了不受管控的目录白名单：
+`hooks/check-todo-modified.js` 和 `hooks/check-handshake.js` 中定义了**项目目录内**不受管控的目录白名单：
 
 ```javascript
 const whiteList = [
@@ -263,6 +297,8 @@ const whiteList = [
   // 可按需增减
 ];
 ```
+
+**项目目录外的路径**（`CLAUDE_PROJECT_DIR` 之外）无需加白名单，两个 hook 默认豁免，详见[快车道模式](#快车道模式轻量任务豁免)。
 
 ### 归档阈值
 

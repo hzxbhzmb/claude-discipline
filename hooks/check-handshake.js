@@ -23,6 +23,16 @@ process.stdin.on('end', () => {
   const sessionId = input?.session_id || '';
   if (!filePath) process.exit(0);
 
+  // 项目目录外的路径 → discipline 作用域之外，直接豁免
+  const projectDir = process.env.CLAUDE_PROJECT_DIR;
+  if (!projectDir) process.exit(0);
+  try {
+    const absFile = path.resolve(filePath);
+    const absProject = path.resolve(projectDir);
+    const rel = path.relative(absProject, absFile);
+    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) process.exit(0);
+  } catch (e) { /* fallthrough */ }
+
   // 白名单：与 check-todo-modified.js 一致 + 允许编辑 todo/methodology 等
   const whiteList = [
     p => p.includes('/todo/current.md') || p.includes('\\todo\\current.md'),
@@ -35,10 +45,6 @@ process.stdin.on('end', () => {
   ];
 
   if (whiteList.some(check => check(filePath))) process.exit(0);
-
-  // 读 todo/current.md
-  const projectDir = process.env.CLAUDE_PROJECT_DIR;
-  if (!projectDir) process.exit(0);
 
   const todoFile = path.join(projectDir, 'todo', 'current.md');
   let content;

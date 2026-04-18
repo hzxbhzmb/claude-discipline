@@ -14,6 +14,17 @@ process.stdin.on('end', () => {
 
   if (!filePath) process.exit(0);
 
+  // 项目目录外的路径 → discipline 作用域之外，直接豁免
+  const projectDir = process.env.CLAUDE_PROJECT_DIR;
+  if (projectDir) {
+    try {
+      const absFile = path.resolve(filePath);
+      const absProject = path.resolve(projectDir);
+      const rel = path.relative(absProject, absFile);
+      if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) process.exit(0);
+    } catch (e) { /* fallthrough */ }
+  }
+
   // 白名单：允许编辑的文件/目录
   const whiteList = [
     p => p.includes('/todo/current.md') || p.includes('\\todo\\current.md'),
@@ -28,7 +39,6 @@ process.stdin.on('end', () => {
   if (whiteList.some(check => check(filePath))) process.exit(0);
 
   // 确保 todo/current.md 存在（全局安装时项目可能还没初始化）
-  const projectDir = process.env.CLAUDE_PROJECT_DIR;
   if (projectDir) {
     const todoDir = path.join(projectDir, 'todo');
     const todoFile = path.join(todoDir, 'current.md');
