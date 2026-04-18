@@ -8,6 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { tryAdoptLegacySection } = require(path.join(__dirname, '..', 'hooks', '_session-util.js'));
 
 const projectDir = process.env.CLAUDE_PROJECT_DIR;
 const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
@@ -84,6 +85,24 @@ function main(sessionId) {
 
   if (sessionId) {
     const shortId = sessionId.slice(0, 8);
+
+    // 5. 升级零摩擦：尝试认领一个进行中的祖传段到本会话
+    //    条件：非归档 + 无 session 标注 + 含至少一个 [ ]
+    //    多候选取最近（文件中最后）那个
+    let adoptedHeader = null;
+    try {
+      if (fs.existsSync(todoFile)) {
+        const content = fs.readFileSync(todoFile, 'utf8');
+        const result = tryAdoptLegacySection(content, sessionId);
+        if (result.adoptedHeader) {
+          fs.writeFileSync(todoFile, result.content);
+          adoptedHeader = result.adoptedHeader;
+        }
+      }
+    } catch (e) {
+      process.stderr.write(`⚠️ 自动认领祖传段失败: ${e.message}\n`);
+    }
+
     process.stdout.write([
       '',
       '---',
@@ -102,6 +121,23 @@ function main(sessionId) {
       '无标注的祖传任务段对所有会话都"透明"（既不拦截也不连坐）。',
       '',
     ].join('\n'));
+
+    if (adoptedHeader) {
+      process.stdout.write([
+        '## 自动认领通知',
+        '',
+        '我（init-project.js）刚检测到一个正在进行的祖传段（无 session 标注、含未勾 `[ ]`），已自动把它认领给本会话：',
+        '',
+        '```',
+        `${adoptedHeader}`,
+        `↓`,
+        `${adoptedHeader} <!-- session: ${shortId} -->`,
+        '```',
+        '',
+        '你可以直接继续这个任务——不需要自己补标注。如果这不是你想继续的任务，用 Edit 把标注去掉或改到别的段上即可。',
+        '',
+      ].join('\n'));
+    }
   }
 }
 

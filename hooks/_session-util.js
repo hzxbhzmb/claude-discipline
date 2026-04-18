@@ -59,9 +59,34 @@ function ownedSections(content, mySessionId) {
   );
 }
 
+// 自动认领：升级场景里，给"最近一个进行中的祖传段"贴上本会话 session 标注，
+// 让 B 类（有在做任务）用户升级时零动作。
+// 认领条件：非归档段 + 无 session 标注 + 至少一个 `- [ ]` 未勾子任务
+// 多个候选时取最后一个（最近建的），覆盖 95% 典型升级场景
+// 返回 { content: 新内容, adoptedHeader: 被改的段原标题（null=未认领） }
+function tryAdoptLegacySection(content, sessionId) {
+  const sid = shortId(sessionId);
+  if (!sid) return { content, adoptedHeader: null };
+
+  const sections = splitSections(content);
+  const adoptable = sections.filter(s =>
+    !s.isArchive &&
+    !s.sessionId &&
+    s.bodyLines.some(l => /^\s*- \[ \]/.test(l))
+  );
+  if (adoptable.length === 0) return { content, adoptedHeader: null };
+
+  const target = adoptable[adoptable.length - 1];
+  const lines = content.split('\n');
+  const originalHeader = lines[target.startLine];
+  lines[target.startLine] = `${originalHeader} <!-- session: ${sid} -->`;
+  return { content: lines.join('\n'), adoptedHeader: originalHeader };
+}
+
 module.exports = {
   shortId,
   extractSectionSessionId,
   splitSections,
   ownedSections,
+  tryAdoptLegacySection,
 };
