@@ -1,21 +1,29 @@
 #!/usr/bin/env node
 // PostToolUse Hook: 编辑 todo/current.md 后
-//   检查全 [x] 段是否有 ✅ 验算通过 → 没有 → deny
+//   检查"本会话"全 [x] 段是否有 ✅ 验算通过 → 没有 → deny
+//
+// 多会话：只扫带本会话 session 标注的段——
+//   - 祖传无标注段：跳过（不连坐）
+//   - 他会话段：跳过（不替别人负责）
 if (process.env.CLAUDE_DISCIPLINE_BYPASS === '1') process.exit(0);
 
 const fs = require('fs');
-const path = require('path');
+const { ownedSections } = require('./_session-util');
 
 let raw = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => raw += chunk);
 process.stdin.on('end', () => {
-  const input = JSON.parse(raw);
+  let input;
+  try { input = JSON.parse(raw); } catch (e) { return; }
+
   const filePath = input?.tool_input?.file_path || '';
+  const sessionId = input?.session_id || '';
 
   if (!filePath.includes('/todo/current.md') && !filePath.includes('\\todo\\current.md')) {
     return;
   }
+  if (!sessionId) return;
 
   let content;
   try {
@@ -24,42 +32,21 @@ process.stdin.on('end', () => {
     return;
   }
 
-  // === Phase 1: 检查"全 [x] 但缺验算行"的段 ===
-  const lines = content.split('\n');
-  const dateHeaderRe = /^## \d{4}-/;
-  const uncheckedRe = /^\s*- \[ \]/;
-  const checkedRe = /^\s*- \[x\]/;
-  const verificationRe = /^>\s*✅\s*验算通过/;
+  const uncheckedRe = /^\s*- \[ \]/m;
+  const checkedRe = /^\s*- \[x\]/m;
+  const verificationRe = /^>\s*✅\s*验算通过/m;
 
-  let currentHeader = '';
-  let hasTasks = false;
-  let allDone = true;
-  let hasVerification = false;
   const missingSections = [];
-
-  function checkSection() {
-    if (currentHeader && hasTasks && allDone && !hasVerification) {
-      missingSections.push(currentHeader);
+  for (const sec of ownedSections(content, sessionId)) {
+    const body = sec.bodyLines.join('\n');
+    const hasUnchecked = uncheckedRe.test(body);
+    const hasChecked = checkedRe.test(body);
+    const hasVerification = verificationRe.test(body);
+    // 段必须有任务项，全部勾选，且无验算行 → missing
+    if (hasChecked && !hasUnchecked && !hasVerification) {
+      missingSections.push(sec.header);
     }
   }
-
-  for (const line of lines) {
-    if (dateHeaderRe.test(line)) {
-      checkSection();
-      if (line.includes('归档')) { currentHeader = ''; continue; }
-      currentHeader = line;
-      hasTasks = false;
-      allDone = true;
-      hasVerification = false;
-      continue;
-    }
-    if (currentHeader) {
-      if (uncheckedRe.test(line)) { hasTasks = true; allDone = false; }
-      if (checkedRe.test(line)) { hasTasks = true; }
-      if (verificationRe.test(line)) { hasVerification = true; }
-    }
-  }
-  checkSection();
 
   if (missingSections.length > 0) {
     const list = missingSections.map(s => `  - ${s}`).join('\n');
@@ -73,5 +60,4 @@ process.stdin.on('end', () => {
     }));
     return;
   }
-
 });
