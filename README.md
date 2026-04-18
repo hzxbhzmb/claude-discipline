@@ -34,6 +34,68 @@ cd claude-discipline
 
 安装后，`todo/` 和 `methodology/` 目录会在每个项目首次会话时自动创建。
 
+### 升级指南（从旧版本 → 多会话版本）
+
+如果你之前装过本插件的老版本（不支持多会话并发），新版本带来一个**硬规则变化**和一个**新拦截点**，可能影响你正在进行的任务。
+
+#### 升级这件事本身
+
+- **Marketplace 用户**：`/plugin update claude-discipline` 后重启会话
+- **手动安装用户**：在插件目录 `git pull` 后重启会话
+
+重启后，SessionStart 会做三件事：
+1. 告诉 AI 本会话的 **sessionId 短 ID**（8 位），AI 后续建任务段时会自动在标题末尾加 `<!-- session: xxxxxxxx -->`
+2. **自动认领**一个正在进行中的祖传段（如果有），把 session 标注贴上去——B 类用户升级零动作
+3. 只清理自己会话或 >24h 陈旧的证据日志，不碰其它活跃会话
+
+#### 行为变更清单
+
+| 项 | 旧版本 | 新版本 |
+|---|---|---|
+| **任务段标题格式** | `## YYYY-MM-DD — 任务简述` | `## YYYY-MM-DD — 任务简述 <!-- session: xxxxxxxx -->`（AI 建段时自动加） |
+| **握手检查** | 看 todo 最后一个任务段是否有 `✅ 执行授权` | 只看**本会话**标注的任务段；没建 = deny |
+| **验算检查** | 扫整个 todo，任一段全 [x] 无验算 → deny（会**连坐**别的会话） | 只扫本会话段；祖传段 / 他会话段**不连坐** |
+| **Write `todo/current.md`** | 允许 | **拒绝**（必须用 Edit 增量改，防并发吞段） |
+| **证据日志清理** | SessionStart 无差别清空所有 `/tmp/claude-evidence-*` | 只清自己会话或 >24h 陈旧文件，不动其它活跃会话 |
+
+**核心概念："祖传段"**：标题没带 `<!-- session: xxxxxxxx -->` 标注的任务段。新版本对祖传段一律**透明处理**——既不拦截，也不连坐任何会话。所以升级时你**不需要**回头改历史段。
+
+#### 按情况升级
+
+**A. 没有进行中任务（手上没活在干）**
+
+直接升级。下次发新任务时，AI 会按新格式建段。✅ 结束。
+
+**B. 有一个正在进行的任务段（还没验算通过）**
+
+**零动作升级**。重启会话时 `init-project.js` 会自动扫描 `todo/current.md`，找到**最近一个进行中的祖传段**（非归档、无 session 标注、含至少一个 `- [ ]` 未勾子任务），把本会话 `<!-- session: xxxxxxxx -->` 标注贴到段标题末尾。AI 会在 SessionStart 注入的规则里看到一条"自动认领通知"，然后可以无缝继续你原来的任务。
+
+```markdown
+## 2026-04-15 — 你正在做的任务                                ← 升级前
+↓ SessionStart 自动改写
+## 2026-04-15 — 你正在做的任务 <!-- session: abcd1234 -->     ← 升级后
+```
+
+**认领规则**（防误认领）：
+- 已归档（`## 归档说明` 段）：不认领
+- 已带任何 session 标注：不认领（可能是别的会话正用着）
+- 纯空段（无 `- [ ]` 也无 `- [x]`）：不认领
+- 全部 `- [x]` 已完成：不认领（已完工的不是你"在做"的任务）
+
+**多个候选段时**：取文件里**最后**一个（最近建的）。如果真的有多个同时在做但都没标注，剩下的仍是祖传段——对新 hook 透明不碍事，让 AI 在做到那个任务时顺手 Edit 加标注即可。
+
+**C. todo 里有很多历史已归档或已验算段**
+
+完全不用管。祖传段对新版本透明。只关心 B 里那个**当前在做的段**即可。
+
+#### 验证升级成功（3 步自测）
+
+1. **Hook 已生效**：重启会话后查看 SessionStart 注入的规则，末尾应有"## 本会话身份"段 + 你的 8 位短 ID
+2. **握手过滤对了**：让 AI 新建一个带标注的任务段 → 写授权 → 编辑任一源文件，应通过
+3. **拦截 Write**：让 AI 用 Write 工具整覆盖 `todo/current.md` → 应被 `check-todo-write-forbidden.js` 拒绝
+
+跑不通或有疑惑，在任何一步前设 `CLAUDE_DISCIPLINE_BYPASS=1` 环境变量可临时跳过全部检查。
+
 ## 工作流程
 
 ```
@@ -62,7 +124,7 @@ cd claude-discipline
 
 类比 TCP 三次握手：单向发送不够，单向收到也不够，必须确认双方都准备好了。
 
-**AI 不能"收到任务就开干"。** Hook 在 AI 编辑项目文件前检查：当前任务段是否有 `> ✅ 执行授权` 标记。没有 → 系统级阻断。
+**AI 不能"收到任务就开干"。** Hook 在 AI 编辑项目文件前检查：**本会话**最新的任务段（带 `<!-- session: xxxxxxxx -->` 标注的那些）是否有 `> ✅ 执行授权` 标记。没有 → 系统级阻断。本会话一个标注段都没建也直接拒绝。
 
 | 握手 | 类比 | 做什么 |
 |------|------|--------|
@@ -73,7 +135,7 @@ cd claude-discipline
 ### Todo 格式示例
 
 ```markdown
-## 2026-04-10 — 任务简述
+## 2026-04-10 — 任务简述 <!-- session: xxxxxxxx -->
 
 **用户意图**：用户原始需求
 
@@ -123,39 +185,54 @@ cd claude-discipline
 | Hook | 触发时机 | 效果 |
 |------|---------|------|
 | **check-todo-modified** | PreToolUse Edit/Write | 未更新 todo → **拒绝** |
-| **check-handshake** | PreToolUse Edit/Write | 当前任务段无 `> ✅ 执行授权` → **拒绝** |
+| **check-handshake** | PreToolUse Edit/Write | 本会话没建带 session 标注的任务段 / 最新段无 `> ✅ 执行授权` → **拒绝** |
 | **check-methodology-index** | PreToolUse Edit/Write | 编辑 methodology 详情前未更新索引 → **拒绝** |
-| **log-tool-call** | PostToolUse（所有工具） | 记录工具调用到证据日志 |
+| **check-todo-write-forbidden** | PreToolUse Write | 用 Write 整覆盖 `todo/current.md` → **拒绝**（必须用 Edit，防并发吞段） |
+| **log-tool-call** | PostToolUse（所有工具） | 记录工具调用到会话证据日志 `/tmp/claude-evidence-${sessionId}.jsonl` |
 | **mark-todo-updated** | PostToolUse Edit/Write | 标记本会话已更新 todo |
+| **mark-methodology-index-updated** | PostToolUse Edit/Write | 标记本会话已更新 methodology 索引 |
 | **check-todo-line-count** | PostToolUse Edit/Write | todo 超 80 行 → **警告归档** |
 | **check-todo-acceptance** | PostToolUse Edit/Write | 任务段缺达标标准 → **警告** |
-| **check-todo-verification** | PostToolUse Edit/Write | 全 `[x]` 无验算行 → **拒绝** |
+| **check-todo-verification** | PostToolUse Edit/Write | 本会话段全 `[x]` 无验算行 → **拒绝**（祖传段/他会话段不连坐） |
 | **check-evidence-on-mark** | PostToolUse Edit/Write | 标记 `[x]` 或写验算无工具证据 → **拒绝**；研究类子任务还需有 `research/` 写入 |
 
 所有 hook 检查 `CLAUDE_DISCIPLINE_BYPASS=1` 环境变量——设置后跳过所有检查。
+
+## 多会话并发支持
+
+同一项目起多个 Claude Code 会话共用 `todo/current.md`、`research/`、`methodology/` 时，插件通过四道机制防止互相踩踏：
+
+1. **证据日志按会话隔离**：`/tmp/claude-evidence-${sessionId}.jsonl` 每会话独立；SessionStart 只清自己会话的日志或 >24h 陈旧文件，绝不无差别全删。
+2. **任务段归属会话**：每个任务段标题必须带 session 标注 `<!-- session: xxxxxxxx -->`，SessionStart 时插件在规则尾部告诉 AI 本会话的短 ID。握手检查和验算检查都只看**本会话的任务段**——别的会话和无标注祖传段对你完全透明（不拦截、不连坐）。没带标注 = 没建任务段，对项目文件的编辑会被拒绝。
+3. **禁止 Write 整覆盖 `todo/current.md`**：一刀切拒绝 Write，必须用 Edit 增量改动。Edit 的 old_string 精确匹配是天然的乐观锁——并发会话 append 新段时即使竞态，失败的一方只是 Edit 匹配不到，重试即可，绝不会静默丢段。
+4. **升级零摩擦——自动认领祖传段**：老用户升级时，SessionStart 自动把"最近一个进行中的祖传段"（非归档、无 session 标注、含 `[ ]`）贴上本会话标注，用户无需手工编辑。AI 会在注入的规则里看到"自动认领通知"，然后无缝继续工作。详见[升级指南](#升级指南从旧版本--多会话版本)。
 
 ## 插件结构
 
 ```
 claude-discipline/
 ├── .claude-plugin/
-│   └── plugin.json              # 插件清单
+│   └── plugin.json                      # 插件清单
 ├── hooks/
-│   ├── hooks.json               # Hook 注册
-│   ├── check-handshake.js       # 三次握手检查
-│   ├── check-evidence-on-mark.js # 证据链检查
-│   ├── log-tool-call.js         # 工具调用日志
-│   ├── check-todo-modified.js   # todo 更新检查
-│   ├── check-todo-acceptance.js # 达标标准检查
-│   ├── check-todo-verification.js # 验算行检查
-│   ├── check-todo-line-count.js # 归档提醒
-│   ├── check-methodology-index.js # 方法论索引检查
-│   ├── mark-todo-updated.js     # todo 更新标记
-│   └── mark-methodology-index-updated.js
+│   ├── hooks.json                       # Hook 注册
+│   ├── _session-util.js                 # 共用工具：按 session 过滤任务段 + 祖传段自动认领
+│   ├── check-handshake.js               # 三次握手检查（按本会话过滤）
+│   ├── check-evidence-on-mark.js        # 证据链检查
+│   ├── check-methodology-index.js       # 方法论索引检查
+│   ├── check-todo-acceptance.js         # 达标标准检查
+│   ├── check-todo-line-count.js         # 归档提醒
+│   ├── check-todo-modified.js           # todo 更新检查
+│   ├── check-todo-verification.js       # 验算行检查（按本会话过滤，不连坐祖传段）
+│   ├── check-todo-write-forbidden.js    # 禁止 Write 整覆盖 todo/current.md
+│   ├── log-tool-call.js                 # 工具调用日志（按 sessionId 分文件）
+│   ├── mark-methodology-index-updated.js
+│   └── mark-todo-updated.js
 ├── rules/
-│   └── discipline.md            # 纪律规则（SessionStart 自动注入）
+│   └── discipline.md                    # 纪律规则（SessionStart 自动注入）
 └── scripts/
-    └── init-project.js          # 会话初始化（创建目录 + 清理证据日志 + 注入规则）
+    ├── init-project.js                  # 会话初始化：建目录 + 安全清理证据日志 + 注入规则 + 自动认领祖传段 + 注入本会话短 ID
+    ├── test-multi-session.js            # 单元级反向验证（33 断言：A/B/C/D 四组）
+    └── test-e2e-concurrent.js           # 端到端并发 + 升级场景 e2e 验证（43 断言）
 ```
 
 ## 方法论分级存放
@@ -177,7 +254,9 @@ methodology/ 采用**渐进式披露**设计：
 ```javascript
 const whiteList = [
   p => p.includes('/todo/current.md'),
+  p => p.includes('/todo/archive/'),
   p => p.includes('/CLAUDE.md'),
+  p => p.includes('/MEMORY.md'),
   p => p.includes('/methodology/'),
   p => p.includes('/research/'),
   p => p.includes('/.claude/'),

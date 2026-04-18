@@ -30,7 +30,7 @@
 ### 任务段完整格式
 
 ```markdown
-## YYYY-MM-DD — 任务简述
+## YYYY-MM-DD — 任务简述 <!-- session: xxxxxxxx -->
 
 **用户意图**：（忠实记录，不加工）
 
@@ -92,6 +92,17 @@
 - 尽量使用多 agent 并行执行独立的任务项
 - **逐个完成、逐个标记 `[x]`**，不要攒到最后批量标记
 - 归档：todo/current.md 超 80 行时，将已完成章节按月归档到 `todo/archive/YYYY-MM.md`
+
+## 多会话并发纪律（Hook 强制）
+
+同一项目可能有多个 Claude Code 会话同时工作，共用 `todo/current.md`、`research/`、`methodology/`。为避免互相踩踏：
+
+- **任务段标题必须带本会话 sessionId 短 ID 标注**：`## YYYY-MM-DD — 任务简述 <!-- session: xxxxxxxx -->`。SessionStart 时插件会在规则尾部注入你本会话的短 ID——照抄即可。
+- **Hook 只认带你自己 session 标注的任务段**：握手检查、验算检查都按本会话过滤；别的会话和祖传无标注段对你"透明"（不拦截、不连坐）。
+- **没带标注 = 没建任务段**：`check-handshake.js` 会拒绝你对项目文件的编辑，并提示把段标题补上 `<!-- session: xxxxxxxx -->`。
+- **禁止用 Write 整覆盖 `todo/current.md`**：会吞掉并发会话正在写入的段。必须用 Edit 增量改动——Edit 的 old_string 精确匹配是天然的乐观锁。
+- **证据日志按 sessionId 隔离**：`/tmp/claude-evidence-${sessionId}.jsonl` 各自独立；SessionStart 只清自己的或 >24h 陈旧文件，不碰其它活跃会话。
+- **升级零摩擦**：SessionStart 会自动把最近一个进行中的祖传段（非归档、无 session 标注、含 `[ ]`）认领给本会话（段标题末尾贴 `<!-- session: xxxxxxxx -->`）。注入的规则里会有"自动认领通知"告诉你认领了哪个——如果不是你要继续的任务，自己用 Edit 把标注挪到别处或删掉。
 
 ## 研究文档（Hook 强制）
 
