@@ -125,14 +125,28 @@
 
 ### 工具层天然豁免（不用操心）
 
-以下工具**本来就不会被握手拦**（`check-handshake.js` 和 `check-todo-modified.js` 的 matcher 只匹配 `Edit|Write`）：
+以下工具**本来就不会被握手拦**：
 
 - **Read / Grep / Glob**：只读探索，随便用。
-- **Bash**：运行命令、查状态、跑测试——不触发握手检查。
-- **Skill 调用**：Skill 工具本身不触发握手；但 Skill 内部若发起 Edit/Write，仍受路径白名单和握手规则约束。
-- **WebFetch / WebSearch / MCP 工具**：同上。
+- **Bash（只读）**：`ls / cat / grep / find / git status / git log / git diff / git commit / git push` 等不改 working tree 的命令，不触发握手检查。
+- **Skill 调用**：Skill 工具本身不触发握手；但 Skill 内部若发起 Edit/Write 或 Bash 写操作，仍受握手规则约束。
+- **WebFetch / WebSearch / MCP 工具**：不触发握手。
 
 还有**项目目录外的路径**（如 `~/Downloads/foo.md`）—— Edit/Write 直接豁免，不在 discipline 作用域。
+
+### ⚠️ Bash 写操作同样受握手保护（v2.1.0+）
+
+`check-bash-mutation.js` 堵住了"用 Bash 绕开 Edit/Write 握手"的漏洞。以下 Bash 命令**与 Edit/Write 对等**——必须握手完成才能执行：
+
+- **文件操作**：`mv / cp / rm / rmdir / tee / dd / truncate / shred / install`
+- **原地编辑**：`sed -i` / `awk -i inplace` / `perl -i`
+- **重定向写入**：`> file` / `>> file`（豁免 `/dev/null` 和 `2>&1` fd 复制）
+- **Git 破坏性子命令**：`git reset --hard / git clean -fd / git checkout -- / git restore / git rm / git mv`
+- **复合命令**：按 `; && || |` 切分后逐段检查——任一段命中 mutation 即触发
+
+不拦的边界命令（低风险，先不拦）：`touch / mkdir / chmod / chown / ln`、`git commit / push / fetch / pull`。
+
+有授权段（含快车道）时这些命令全部放行——与 Edit/Write 行为完全一致。
 
 ### 关键词快车道（轻量任务建段简化）
 
@@ -180,3 +194,4 @@
 - ❌ 验算用和执行相同的路径（读一遍代码≠验算；跑测试才是）
 - ❌ 做完才想验算方案（必须在握手时就规划好）
 - ❌ 把应走重档的任务（多文件改、研究、重构、配置变更）硬塞进快车道
+- ❌ 用 Bash 的 `mv / sed -i / cp / rm / 重定向 / git reset --hard` 绕开握手改项目文件（v2.1.0+ 已由 check-bash-mutation 堵死，但此反模式本身就是纪律违规）

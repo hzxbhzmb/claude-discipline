@@ -160,11 +160,13 @@ cd claude-discipline
 
 ### 1. 工具层天然豁免
 
-`check-handshake` 和 `check-todo-modified` 的 matcher 只匹配 `Edit|Write`。以下工具**不会触发握手检查**：
+以下工具/命令**不会触发握手检查**：
 
 - **Read / Grep / Glob**：只读探索随便用
-- **Bash**：运行命令、查状态、跑测试
-- **Skill / WebFetch / WebSearch / MCP 工具**：Skill 本身不触发（但 Skill 内部的 Edit/Write 仍受约束）
+- **Bash（只读）**：`ls / cat / grep / find / git status / git log / git diff / git commit / git push` 等不改 working tree 的命令
+- **Skill / WebFetch / WebSearch / MCP 工具**：Skill 本身不触发（但 Skill 内部的 Edit/Write 或 Bash 写操作仍受约束）
+
+> ⚠️ **v2.1.0 起，Bash 的写/删/移操作与 Edit/Write 对等** —— `mv / cp / rm / sed -i / 重定向 / git reset --hard` 等命令也受三次握手保护。详见[Bash 写保护](#bash-写保护v210)。
 
 ### 2. 项目目录外的文件豁免
 
@@ -187,6 +189,37 @@ cd claude-discipline
 **触发条件**：用户措辞含`快速 / 直接 / 小改 / 不用握手 / 一句话 / 跑一下 / 简单`，或任务特征为单命令 / 单 skill / 只读探索 / 单文件 ≤10 行改动。
 
 **必须走重档的场景**：多文件改、研究 / 调研、重构、配置 / 基础设施变更、删除 / 不可回滚操作、用户质疑 AI 理解——这些场景即使用户说"快速"也要完整握手。
+
+## Bash 写保护（v2.1.0+）
+
+旧版本 hook 的 matcher 只匹配 `Edit|Write`，AI 可以用 `mv / sed -i / cp / rm / 重定向 / git reset --hard` 等 Bash 命令绕过三次握手直接改项目文件。v2.1.0 新增 `check-bash-mutation.js` 堵住这个漏洞。
+
+### 拦截清单
+
+| 类别 | 命令 |
+|------|------|
+| 文件操作 | `mv` `cp` `rm` `rmdir` `tee` `dd` `truncate` `shred` `install` |
+| 原地编辑 | `sed -i` `awk -i inplace` `perl -i` |
+| 重定向 | `> file` `>> file`（豁免 `/dev/null` 和 `2>&1` fd 复制） |
+| Git 破坏性 | `git reset --hard` `git clean -fd` `git checkout --` `git restore` `git rm` `git mv` |
+
+**不拦**：只读命令（`ls / cat / grep / find / git status / git log / git diff`）、`git commit / push / fetch / pull`（不改 working tree）、`touch / mkdir / chmod / chown / ln`（低风险边界）。
+
+**复合命令**：按 `; && || |` 切分后逐段检查——任一段命中 mutation 即触发。
+
+### 豁免条件
+
+1. **有授权段**：本会话最新任务段含 `> ✅ 执行授权`（含快车道）→ 放行
+2. **Bypass env**：`CLAUDE_DISCIPLINE_BYPASS=1` → 放行
+3. **todo 未初始化**：项目根没有 `todo/current.md`（init 未跑）→ 放行
+
+### 升级影响（v2.0.x → v2.1.0）
+
+**零动作升级**：无需改任何项目文件、任务段、配置。现有授权段格式不变。`/plugin update` 后新会话立即生效；正在跑的旧会话也即时生效（hook 每次工具调用由 Claude Code 现场 spawn node 进程）。
+
+**行为变化**：升级后 AI 如果尝试用 Bash 改项目文件但无授权段，会收到 deny 消息，自带建段指引——不需要重启会话，AI 自救即可。
+
+**逃生舱**：设 `CLAUDE_DISCIPLINE_BYPASS=1` 临时跳过。
 
 ## 证据链
 
@@ -220,6 +253,7 @@ cd claude-discipline
 |------|---------|------|
 | **check-todo-modified** | PreToolUse Edit/Write | 未更新 todo → **拒绝** |
 | **check-handshake** | PreToolUse Edit/Write | 本会话没建带 session 标注的任务段 / 最新段无 `> ✅ 执行授权` → **拒绝** |
+| **check-bash-mutation** | PreToolUse Bash | Bash 里 mv/sed -i/rm/重定向/git reset --hard 等写操作，无握手授权 → **拒绝**（v2.1.0+） |
 | **check-methodology-index** | PreToolUse Edit/Write | 编辑 methodology 详情前未更新索引 → **拒绝** |
 | **check-todo-write-forbidden** | PreToolUse Write | 用 Write 整覆盖 `todo/current.md` → **拒绝**（必须用 Edit，防并发吞段） |
 | **log-tool-call** | PostToolUse（所有工具） | 记录工具调用到会话证据日志 `/tmp/claude-evidence-${sessionId}.jsonl` |
@@ -251,6 +285,7 @@ claude-discipline/
 │   ├── hooks.json                       # Hook 注册
 │   ├── _session-util.js                 # 共用工具：按 session 过滤任务段 + 祖传段自动认领
 │   ├── check-handshake.js               # 三次握手检查（按本会话过滤）
+│   ├── check-bash-mutation.js           # Bash 写操作握手保护（v2.1.0+）
 │   ├── check-evidence-on-mark.js        # 证据链检查
 │   ├── check-methodology-index.js       # 方法论索引检查
 │   ├── check-todo-acceptance.js         # 达标标准检查
@@ -266,7 +301,8 @@ claude-discipline/
 └── scripts/
     ├── init-project.js                  # 会话初始化：建目录 + 安全清理证据日志 + 注入规则 + 自动认领祖传段 + 注入本会话短 ID
     ├── test-multi-session.js            # 单元级反向验证（33 断言：A/B/C/D 四组）
-    └── test-e2e-concurrent.js           # 端到端并发 + 升级场景 e2e 验证（43 断言）
+    ├── test-e2e-concurrent.js           # 端到端并发 + 升级场景 e2e 验证（43 断言）
+    └── test-bash-mutation.js            # Bash 写保护反向验证（59 断言：8 分组）
 ```
 
 ## 方法论分级存放
