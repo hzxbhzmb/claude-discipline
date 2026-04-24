@@ -221,6 +221,32 @@ cd claude-discipline
 
 **逃生舱**：设 `CLAUDE_DISCIPLINE_BYPASS=1` 临时跳过。
 
+## 验算失败处理（v2.2.0+）
+
+验算不保证一次过。旧版规则只说"验算通过就收尾"，没说失败怎么办——AI 可能无限 silent 改到过为止，烧 token 且用户完全失去知情权。v2.2.0 新增 `check-verification-retry-limit.js` + 三种失败段类型结构化这个流程。
+
+### 三种段类型
+
+| 段类型 | 用途 | 格式 |
+|-------|------|------|
+| 迭代中 | 每次验算失败后写 | `> ❌ 验算第 N 次失败：{原因} → 改进：{做了什么}` |
+| 最终放弃 | 超上限 / AI 主动交棒 | `> ❌ 最终验算失败：{汇总} \| 尝试：... \| 建议：...` |
+| 失败后成功 | 经 K 次迭代终于过 | `> ✅ 验算通过：{最终方案，经 K 次迭代}` |
+
+### 迭代上限
+
+**默认 3 次**。可通过 env 覆盖：
+
+```bash
+export DISCIPLINE_VERIFY_RETRY_LIMIT=5
+```
+
+超限后 hook 会 deny 对 todo 的下次编辑，强制 AI 把新失败改写为 `> ❌ 最终验算失败` 段，在对话中汇报并交棒给用户决定方向。
+
+### 升级影响（v2.1.0 → v2.2.0）
+
+**零动作升级**。现有失败处理习惯不受影响——AI 不写失败段 → hook 不介入（hook 只数写出来的行数，不监控测试红绿）。
+
 ## 证据链
 
 插件通过 Hook 记录**每一次工具调用**（工具名、操作目标、时间戳）到会话证据日志（JSONL 格式）。这是硬数据，AI 无法伪造。
@@ -263,6 +289,7 @@ cd claude-discipline
 | **check-todo-acceptance** | PostToolUse Edit/Write | 任务段缺达标标准 → **警告** |
 | **check-todo-verification** | PostToolUse Edit/Write | 本会话段全 `[x]` 无验算行 → **拒绝**（祖传段/他会话段不连坐） |
 | **check-evidence-on-mark** | PostToolUse Edit/Write | 标记 `[x]` 或写验算无工具证据 → **拒绝**；研究类子任务还需有 `research/` 写入 |
+| **check-verification-retry-limit** | PostToolUse Edit/Write | 本会话最新段 `> ❌ 验算第 N 次失败` 累计 > 3（默认）且无"最终失败"行 → **拒绝**（v2.2.0+）|
 
 所有 hook 检查 `CLAUDE_DISCIPLINE_BYPASS=1` 环境变量——设置后跳过所有检查。
 
@@ -286,6 +313,7 @@ claude-discipline/
 │   ├── _session-util.js                 # 共用工具：按 session 过滤任务段 + 祖传段自动认领
 │   ├── check-handshake.js               # 三次握手检查（按本会话过滤）
 │   ├── check-bash-mutation.js           # Bash 写操作握手保护（v2.1.0+）
+│   ├── check-verification-retry-limit.js # 验算失败迭代上限（v2.2.0+）
 │   ├── check-evidence-on-mark.js        # 证据链检查
 │   ├── check-methodology-index.js       # 方法论索引检查
 │   ├── check-todo-acceptance.js         # 达标标准检查
@@ -302,7 +330,8 @@ claude-discipline/
     ├── init-project.js                  # 会话初始化：建目录 + 安全清理证据日志 + 注入规则 + 自动认领祖传段 + 注入本会话短 ID
     ├── test-multi-session.js            # 单元级反向验证（33 断言：A/B/C/D 四组）
     ├── test-e2e-concurrent.js           # 端到端并发 + 升级场景 e2e 验证（43 断言）
-    └── test-bash-mutation.js            # Bash 写保护反向验证（59 断言：8 分组）
+    ├── test-bash-mutation.js            # Bash 写保护反向验证（59 断言：8 分组）
+    └── test-verification-retry.js       # 验算失败上限反向验证（16 断言：8 分组）
 ```
 
 ## 方法论分级存放
