@@ -1,5 +1,49 @@
 # Changelog
 
+## 2.3.0 — 自动归档 + 行数硬阻断（2026-04-26）
+
+### 背景
+
+旧规则只把"超 80 行归档"写在文档里，hook 仅 stdout 一行软警告（不 deny），AI 完全可以无视——导致 `todo/current.md` 在长期项目里普遍累积到几百上千行，挤占上下文窗口、读起来也累。
+
+### 新增
+
+- **`hooks/auto-archive.js`**：SessionStart 钩子（与 `init-project.js` 并列），扫描 `todo/current.md`，把"已完成段"整段搬到 `todo/archive/YYYY-MM.md`（按段标题日期分月归档）。
+  - 完成判定（保守）：段内**所有** `- [ ]` 已勾 + 至少含一个完成标记（`> ✅ 验算通过` / `> ❌ 最终验算失败` / `> ✅ 完成`）。
+  - 跨会话宽容：不要求 sessionId 匹配；任何会话写完的段都可被任何会话归档；祖传无标注段同样适用。
+  - 失败安全：异常吞掉不阻塞会话启动。
+- **`hooks/check-todo-line-count.js` 升级**：原本只 stdout 一行警告，现在分三档：
+  - ≤80 静默；
+  - 80 < n ≤ 200 软警告（保留旧行为）；
+  - **> 200 行 deny 下次 Edit/Write**，消息附归档操作步骤。
+  - 硬线可通过 env `DISCIPLINE_TODO_HARD_LIMIT=N` 覆盖。
+- **`scripts/test-archive.js`**：29 断言，覆盖 3 大组（auto-archive 11 个判定场景 / 行数 hook 三档 / SessionStart 串行链）。
+
+### 规则更新
+
+- `rules/discipline.md`：归档段从单行说明扩成"自动 / 软警告 / 硬阻断"三轨。
+- 快车道完成新增**可选** `> ✅ 完成：{一句话}` 标记，让快车道段也能被自动归档。
+
+### 升级影响（v2.2.0 → v2.3.0）
+
+**零动作升级**：
+
+- 现有任务段格式不变；老段如有 `> ✅ 验算通过` 会在下次 SessionStart 自动归档（一次性清理积压）。
+- 老的 `check-todo-line-count.js` 行为在 ≤200 行内完全保留。
+- 不影响现有任何 hook、不需要改 settings、不需要重启。
+
+**行为变化**：
+
+- 第一次 SessionStart 后会看到 stderr 一行 `✓ auto-archive: N 个完成段已归档（...）`——这是正常清理。
+- current.md 超 200 行后下次 Edit/Write 会被 deny，必须先归档再继续。
+
+### 回归验证
+
+- 新 `test-archive.js` 29/29 通过
+- `test-multi-session.js` 33/33 通过
+- `test-bash-mutation.js` 59/59 通过
+- `test-verification-retry.js` 16/16 通过
+
 ## 2.2.0 — 验算失败迭代上限（2026-04-24）
 
 ### 背景

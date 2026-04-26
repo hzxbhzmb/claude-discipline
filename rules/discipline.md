@@ -120,7 +120,10 @@
 
 - 尽量使用多 agent 并行执行独立的任务项
 - **逐个完成、逐个标记 `[x]`**，不要攒到最后批量标记
-- 归档：todo/current.md 超 80 行时，将已完成章节按月归档到 `todo/archive/YYYY-MM.md`
+- **归档双轨**：
+  - **自动**：每次 SessionStart 时 `auto-archive.js` 钩子会扫描 `todo/current.md`，把"已完成段"（所有 `- [ ]` 都勾了 + 含 `> ✅ 验算通过` / `> ❌ 最终验算失败` / `> ✅ 完成` 任一标记）整段搬到 `todo/archive/YYYY-MM.md`（按段标题日期分月）。任何会话写完的段都可被任何会话归档（不要求 session 匹配，归档是宽容的）。
+  - **软警告**：current.md 超 80 行时 PostToolUse 软警告。
+  - **硬阻断**：current.md 超 200 行（可通过 env `DISCIPLINE_TODO_HARD_LIMIT=N` 调）时下次 Edit/Write 被 deny，必须先归档已完成段才能继续。
 
 ## 多会话并发纪律（Hook 强制）
 
@@ -197,6 +200,8 @@
 ```
 
 跳过 AI 理解、验算方案、达标标准、子任务列表。完成后在对话中一句话汇报即可，不强制写 `> ✅ 验算通过` 段。
+
+**让快车道段也能被自动归档**（可选）：完成后在段尾加一行 `> ✅ 完成：{一句话}`，下次 SessionStart 时 auto-archive 钩子会把整段搬到 `todo/archive/`。不写也无妨——只是会留在 current.md 里直到你手动处理。
 
 ### 必须走重档（不适用快车道）
 
