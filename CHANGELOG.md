@@ -1,5 +1,46 @@
 # Changelog
 
+## 2.4.0 — 归档按日分文件 + 月子目录 + 追加位置规则（2026-04-26）
+
+### 背景
+
+v2.3.0 把 archive 按月归到单文件 `archive/YYYY-MM.md`，但一个月就能写满 900+ 行（本仓库 2026-04 月文件就是 921 行 / 28 段），找历史段还是要在大文件里翻。同时发现 AI 创建新任务段的位置不一致——有时插在 current.md 顶部、有时附在末尾，乱。
+
+### 新增 / 变更
+
+- **行数 hook 真生效（PostToolUse → PreToolUse）**：之前 `check-todo-line-count.js` 注册在 PostToolUse + 输出 `permissionDecision:deny`——但 Claude Code 的 PostToolUse 不认这个 schema，deny 被静默忽略，硬阻断从未实际生效（v2.3.0/v2.4.0 早期版本均有此 bug）。现改为 PreToolUse + 白名单：current.md >200 行时，编辑非 current/非 archive 的项目文件被 deny；编辑 current.md 自身或 archive/ 下文件继续放行（避免归档死锁）。
+- **删除 80 行软警告档**：`check-todo-line-count.js` 现在只有两档——≤200 完全静默 / >200 硬 deny。理由：软警告 AI 可无视，把心智模型简化到只剩硬阻断。`rules/discipline.md` 同步移除"软警告"条目。
+- **`hooks/auto-archive.js`**：归档路径从 `archive/YYYY-MM.md` 改为 `archive/YYYY-MM/YYYY-MM-DD.md`（按日分文件，月份作子目录）。同一日多段聚到同一日文件；跨日多段分到各自日文件；跨月多段分到各自月子目录。日文件首行是 `# YYYY-MM-DD 归档`。
+- **`rules/discipline.md` 追加位置规则**：明文规定"创建新任务段必须追加到 `todo/current.md` 末尾"——靠规则文本约束，未加 hook 强制。
+- **`hooks/check-todo-line-count.js`**：deny 消息里的归档路径示例同步更新到新格式。
+- **`scripts/migrate-archive-to-daily.js`**（新）：一次性迁移工具，把旧的 `archive/YYYY-MM.md` 拆成 `archive/YYYY-MM/YYYY-MM-DD.md` 多文件。支持 `--dry-run` 预览。
+- **`scripts/test-archive.js`**：测试断言全部更新到新路径，新增 D 组（按日分文件 + 月子目录）10 个断言。共 39/39 通过。
+
+### 升级影响（v2.3.0 → v2.4.0）
+
+**对仍在用 v2.3.0 月文件结构的项目**：
+
+1. 备份：`cp -r todo/archive /tmp/archive.bak.$(date +%s)`
+2. 跑迁移：`CLAUDE_PROJECT_DIR=$(pwd) node {plugin}/scripts/migrate-archive-to-daily.js --dry-run`（先预览）
+3. 实跑：去掉 `--dry-run`
+4. 对账：`find todo/archive -name '*.md' -exec grep -c "^## " {} +` 段总数应等于备份里的段数
+
+**新建项目**：开箱即用，没有迁移负担。
+
+**对 AI 行为的影响**：
+
+- 创建新任务段时**必须追加到文件末尾**（在最后一个 `---` 后），不再插顶部或中间。
+- 归档路径更新到 `archive/YYYY-MM/YYYY-MM-DD.md`。
+- 现有 hook 行为完全保留（含完成判定 / 行数三档 / 跨会话宽容）。
+
+### 回归验证
+
+- `test-archive.js` 39/39 通过（新增 10 个 D 组按日测试）
+- `test-multi-session.js` 33/33 通过
+- `test-bash-mutation.js` 59/59 通过
+- `test-verification-retry.js` 16/16 通过
+- 真机迁移：本仓库 `archive/2026-04.md`（921 行 / 28 段）→ 5 日文件（71+105+31+288+435 行 / 5+9+1+7+6=28 段），grep 反向对账无丢失。
+
 ## 2.3.0 — 自动归档 + 行数硬阻断（2026-04-26）
 
 ### 背景

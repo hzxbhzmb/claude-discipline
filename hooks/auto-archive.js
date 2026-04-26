@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// SessionStart Hook: 自动把 todo/current.md 中已完成的任务段搬到 todo/archive/YYYY-MM.md
+// SessionStart Hook: 自动把 todo/current.md 中已完成的任务段搬到
+//   todo/archive/YYYY-MM/YYYY-MM-DD.md（按日一文件、月份子目录）
 //
 // 完成判定（保守，宁可不归档也别误归档进行中段）：
 //   1. 不是"## 归档说明"段
@@ -7,7 +8,7 @@
 //   3. 段内至少有一个完成标记：`> ✅ 验算通过` 或 `> ❌ 最终验算失败` 或 `> ✅ 完成`
 //
 // 跨会话宽容：不要求 sessionId 标注匹配——任何会话写完的段都可被任何会话归档
-// 归档月份：从段标题 `## YYYY-MM-DD —` 取前 7 字符；解析失败回退到当月
+// 归档日期：从段标题 `## YYYY-MM-DD —` 取前 10 字符；解析失败回退到当天 (UTC)
 //
 // 输出：stderr 一行摘要；stdout 不输出（避免污染 SessionStart 注入流）
 // 失败安全：任何异常都不阻塞会话启动，吞掉错误并继续
@@ -39,13 +40,16 @@ function isDoneSection(section) {
   return hasCompletionMarker;
 }
 
-function archiveMonthFromHeader(header) {
-  // ## YYYY-MM-DD — XXX  → "YYYY-MM"
-  const m = header.match(/^##\s+(\d{4}-\d{2})-\d{2}/);
+function archiveDateFromHeader(header) {
+  // ## YYYY-MM-DD — XXX  → "YYYY-MM-DD"
+  const m = header.match(/^##\s+(\d{4}-\d{2}-\d{2})/);
   if (m) return m[1];
-  // 回退：当月
+  // 回退：当天 (UTC)
   const now = new Date();
-  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(now.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 function sectionToText(section, allLines) {
@@ -65,24 +69,27 @@ function main() {
   const doneSections = sections.filter(isDoneSection);
   if (doneSections.length === 0) return;
 
-  // 按月分组
-  const byMonth = new Map();
+  // 按日分组（保持文件中的原始顺序）
+  const byDay = new Map();
   for (const sec of doneSections) {
-    const month = archiveMonthFromHeader(sec.header);
-    if (!byMonth.has(month)) byMonth.set(month, []);
-    byMonth.get(month).push(sec);
+    const day = archiveDateFromHeader(sec.header);
+    if (!byDay.has(day)) byDay.set(day, []);
+    byDay.get(day).push(sec);
   }
 
-  // 写归档：每月一个文件，append 到末尾（保持时间顺序）
+  // 写归档：每天一个文件，存放在 archive/YYYY-MM/ 子目录，append 到末尾
   fs.mkdirSync(archiveDir, { recursive: true });
-  for (const [month, secs] of byMonth) {
-    const archiveFile = path.join(archiveDir, `${month}.md`);
+  for (const [day, secs] of byDay) {
+    const month = day.slice(0, 7); // YYYY-MM
+    const monthDir = path.join(archiveDir, month);
+    fs.mkdirSync(monthDir, { recursive: true });
+    const archiveFile = path.join(monthDir, `${day}.md`);
     let archiveContent = '';
     if (fs.existsSync(archiveFile)) {
       archiveContent = fs.readFileSync(archiveFile, 'utf8');
       if (!archiveContent.endsWith('\n')) archiveContent += '\n';
     } else {
-      archiveContent = `# ${month} 归档\n\n`;
+      archiveContent = `# ${day} 归档\n\n`;
     }
     const block = secs
       .map(s => sectionToText(s, allLines).replace(/\s+$/, ''))
@@ -115,8 +122,8 @@ function main() {
   }
   fs.writeFileSync(todoFile, cleaned.join('\n'));
 
-  const summary = Array.from(byMonth.entries())
-    .map(([m, s]) => `${s.length}段→archive/${m}.md`)
+  const summary = Array.from(byDay.entries())
+    .map(([d, s]) => `${s.length}段→archive/${d.slice(0, 7)}/${d}.md`)
     .join(', ');
   process.stderr.write(`✓ auto-archive: ${doneSections.length} 个完成段已归档（${summary}）\n`);
 }
