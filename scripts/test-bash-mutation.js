@@ -263,6 +263,85 @@ const { isMutation } = require('../hooks/check-bash-mutation.js');
 });
 
 // ============================================================
+// 分组 I（v3.0.1+）：mutation 目标全在白名单 → 放行（不需握手）
+// 修死锁：AI 用 Bash 写 todo/current.md 建段不再被拦
+// ============================================================
+console.log('\n=== 分组 I（v3.0.1+）：白名单目标放行 + 混合命令仍 deny ===');
+
+{
+  // I1：tee -a todo/current.md（pipe 形式）不需要握手
+  const cmd = 'echo "## new section" | tee -a todo/current.md';
+  const { stdout, code } = runHook(bashInput(cmd, { withSession: false }), ENV_BASE);
+  record('I1: pipe | tee -a todo/current.md → 放行（白名单）', code === 0 && !stdout.trim(), `stdout=${JSON.stringify(stdout).slice(0,80)}`);
+}
+
+{
+  // I2：>> todo/current.md（重定向）不需要握手
+  const { stdout, code } = runHook(bashInput('echo x >> todo/current.md', { withSession: false }), ENV_BASE);
+  record('I2: echo x >> todo/current.md → 放行（白名单）', code === 0 && !stdout.trim(), `stdout=${JSON.stringify(stdout).slice(0,80)}`);
+}
+
+{
+  // I3：> .claude/settings.json
+  const { stdout, code } = runHook(bashInput('echo {} > .claude/settings.json', { withSession: false }), ENV_BASE);
+  record('I3: > .claude/settings.json → 放行（白名单）', code === 0 && !stdout.trim());
+}
+
+{
+  // I4：mv x research/foo.md
+  const { stdout, code } = runHook(bashInput('mv tmp.md research/foo.md', { withSession: false }), ENV_BASE);
+  record('I4: mv X research/foo.md → 放行（白名单）', code === 0 && !stdout.trim());
+}
+
+{
+  // I5：sed -i ... methodology/_index.md
+  const { stdout, code } = runHook(bashInput("sed -i 's/x/y/' methodology/_index.md", { withSession: false }), ENV_BASE);
+  record('I5: sed -i methodology/_index.md → 放行（白名单）', code === 0 && !stdout.trim());
+}
+
+{
+  // I6：rm todo/archive/2026-04/2026-04-01.md（archive 子目录在白名单）
+  const { stdout, code } = runHook(bashInput('rm todo/archive/2026-04/2026-04-01.md', { withSession: false }), ENV_BASE);
+  record('I6: rm todo/archive/.../X.md → 放行（白名单）', code === 0 && !stdout.trim());
+}
+
+{
+  // I7：>> CLAUDE.md
+  const { stdout, code } = runHook(bashInput('echo notes >> CLAUDE.md', { withSession: false }), ENV_BASE);
+  record('I7: >> CLAUDE.md → 放行（白名单）', code === 0 && !stdout.trim());
+}
+
+{
+  // I8（关键反例）：混合命令——白名单 + 非白名单 → 仍 deny
+  const cmd = 'echo x >> todo/current.md && rm src/app.js';
+  const { stdout, code } = runHook(bashInput(cmd, { withSession: false }), ENV_BASE);
+  const denied = parseDecision(stdout) === 'deny';
+  record('I8: 白名单 + 非白名单混合 → 仍 deny（保守）', denied, `decision=${parseDecision(stdout)}`);
+}
+
+{
+  // I9（反例）：mv 普通源文件仍 deny
+  const { stdout, code } = runHook(bashInput('mv apps/web/src/foo.ts apps/web/src/bar.ts', { withSession: false }), ENV_BASE);
+  const denied = parseDecision(stdout) === 'deny';
+  record('I9: mv 普通源文件 → 仍 deny', denied);
+}
+
+{
+  // I10：解析不出目标的 mutation 命令（保守 deny）
+  // dd 没有 of= → extractSegmentTargets 返回 null → 不放行
+  const { stdout, code } = runHook(bashInput('dd if=/dev/zero', { withSession: false }), ENV_BASE);
+  const denied = parseDecision(stdout) === 'deny';
+  record('I10: dd 无 of= 解析失败 → 保守 deny', denied);
+}
+
+{
+  // I11：deny 消息含"用 Edit 工具"指引（A 修）
+  const { stdout } = runHook(bashInput('mv a b', { withSession: false }), ENV_BASE);
+  const hasGuide = stdout.includes('Edit 工具') || stdout.includes('用 **Edit');
+  record('I11: deny 消息含"用 Edit 工具"指引', hasGuide, `stdout 前 200 字: ${stdout.slice(0,200)}`);
+}
+
+// ============================================================
 // 汇总
 // ============================================================
 const passed = RESULTS.filter(r => r.passed).length;

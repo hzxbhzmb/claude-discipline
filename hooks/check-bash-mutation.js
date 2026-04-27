@@ -16,10 +16,11 @@
 // 豁免：
 //   CLAUDE_DISCIPLINE_BYPASS=1 环境变量
 //   本会话最新任务段有 > ✅ 执行授权（含快车道）
+//   v3.0.1+：所有 mutation 目标均为白名单文件（todo/current.md / archive/ 等）
 
 const fs = require('fs');
 const path = require('path');
-const { runHook, denyPre } = require('./_hook-runner');
+const { runHook, denyPre, isWhitelisted } = require('./_hook-runner');
 const { ownedSections, shortId } = require('./_session-util');
 
 runHook('check-bash-mutation', 'PreToolUse', (ctx) => {
@@ -27,6 +28,9 @@ runHook('check-bash-mutation', 'PreToolUse', (ctx) => {
   if (!ctx.command) return;
   if (!isMutation(ctx.command)) return;
   if (!ctx.projectDir) return;
+
+  // v3.0.1+：所有 mutation 目标都在白名单 → 视同 Edit/Write 白名单文件，无需握手
+  if (allTargetsWhitelisted(ctx.command)) return;
 
   const todoFile = path.join(ctx.projectDir, 'todo', 'current.md');
   let content;
@@ -49,7 +53,10 @@ runHook('check-bash-mutation', 'PreToolUse', (ctx) => {
       '新规则（v2.1.0+）：Bash 里的 mv/cp/rm/sed -i/重定向/git reset --hard 等写操作',
       '与 Edit/Write 同等对待——同样受三次握手保护，不能再用 Bash 绕过。',
       '',
-      '请在 todo/current.md 末尾新建任务段：',
+      '💡 **如果你想新建任务段，请改用 Edit 工具**直接编辑 todo/current.md（白名单文件，',
+      '无需握手即可编辑）；不要用 Bash 重定向（tee / >> / cat <<EOF）写入它。',
+      '',
+      '建段模板：',
       '```',
       `## YYYY-MM-DD — 任务简述 <!-- session: ${sid} -->`,
       '```',
@@ -74,6 +81,9 @@ runHook('check-bash-mutation', 'PreToolUse', (ctx) => {
       '',
       '新规则（v2.1.0+）：Bash 里的写/删/移操作与 Edit/Write 同等对待，',
       '必须握手完成才能执行——不能再用 Bash 绕过。',
+      '',
+      '💡 想编辑 todo/current.md 的任务段？请改用 **Edit 工具**——current.md 在白名单内，',
+      '可直接编辑无需握手。Bash 路径只针对项目源文件。',
       '',
       '请在当前任务段写 **AI 理解** → 向用户确认 → 写 `> ✅ 执行授权：...`。',
     ].join('\n');
@@ -137,5 +147,133 @@ function segmentIsMutation(seg) {
   return false;
 }
 
+// === v3.0.1+：白名单目标提取 ===
+//
+// 从 Bash 命令字符串里提取 mutation 操作的目标文件路径。
+// 简单解析：cover 常见 90% 场景；不确定的 case 返回 null（保守 → 不放行 → 死锁回到 v3.0.0 行为）。
+//
+// 覆盖：
+//   tee FILE / tee -a FILE
+//   > FILE / >> FILE
+//   sed -i ... FILE / awk -i inplace ... FILE / perl -i ... FILE
+//   rm FILE / rm -rf FILE
+//   mv ... FILE / cp ... FILE  （取最后一个非 flag 参数为目标）
+//   truncate ... FILE / dd of=FILE / shred FILE
+//   git rm FILE / git mv X FILE / git restore FILE
+//
+// 不覆盖：变量替换 / 命令替换 / 引号嵌套深 / heredoc 内容
+function extractSegmentTargets(seg) {
+  const targets = [];
+
+  // 重定向：取所有 > FILE 和 >> FILE 目标（排除 /dev/null 和 fd 复制）
+  const redirectRe = /(?<!&)>{1,2}(?!&)\s*(\S+)/g;
+  let m;
+  while ((m = redirectRe.exec(seg)) !== null) {
+    const target = m[1];
+    if (target === '/dev/null') continue;
+    targets.push(stripQuotes(target));
+  }
+
+  const cmdMatch = seg.match(/^(?:\w+=\S+\s+)*(?:sudo\s+)?(\S+)/);
+  if (!cmdMatch) return targets.length ? targets : null;
+  const cmdName = cmdMatch[1];
+
+  // 把命令切成 token（去 quotes 但不处理转义）；先去掉重定向部分
+  const segNoRedirect = seg.replace(/(?<!&)>{1,2}(?!&)\s*\S+/g, '');
+  const tokens = tokenize(segNoRedirect);
+  const args = tokens.slice(1);
+
+  if (cmdName === 'tee') {
+    // tee [-a] [--append] [-i] FILE...  所有非 flag 是目标
+    for (const a of args) {
+      if (a === '-a' || a === '--append' || a === '-i' || a === '--ignore-interrupts') continue;
+      if (a.startsWith('-')) continue;
+      targets.push(stripQuotes(a));
+    }
+  } else if (cmdName === 'rm' || cmdName === 'rmdir' || cmdName === 'shred' || cmdName === 'truncate') {
+    for (const a of args) {
+      if (a.startsWith('-')) continue;
+      targets.push(stripQuotes(a));
+    }
+  } else if (cmdName === 'mv' || cmdName === 'cp' || cmdName === 'install') {
+    const nonFlag = args.filter(a => !a.startsWith('-'));
+    if (nonFlag.length >= 2) targets.push(stripQuotes(nonFlag[nonFlag.length - 1]));
+    else return null;
+  } else if (cmdName === 'sed' || cmdName === 'awk' || cmdName === 'perl') {
+    // 简化：最后一个非 flag、非 expression token 当作目标
+    const candidate = args.filter(a => !a.startsWith('-'));
+    if (candidate.length >= 1) targets.push(stripQuotes(candidate[candidate.length - 1]));
+    else return null;
+  } else if (cmdName === 'dd') {
+    for (const a of args) {
+      if (a.startsWith('of=')) targets.push(stripQuotes(a.slice(3)));
+    }
+  } else if (cmdName === 'git') {
+    const sub = args[0];
+    if (!sub) return null;
+    if (sub === 'reset' || sub === 'clean' || sub === 'checkout') {
+      // 这些 git 子命令的"目标"可能是整个工作树——保守不放行
+      return null;
+    }
+    const fileArgs = args.slice(1).filter(a => !a.startsWith('-'));
+    for (const a of fileArgs) targets.push(stripQuotes(a));
+  }
+
+  return targets.length ? targets : null;
+}
+
+function stripQuotes(s) {
+  if (!s) return s;
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+function tokenize(seg) {
+  const tokens = [];
+  let i = 0, cur = '', inQuote = null;
+  while (i < seg.length) {
+    const c = seg[i];
+    if (inQuote) {
+      cur += c;
+      if (c === inQuote) inQuote = null;
+    } else if (c === '"' || c === "'") {
+      cur += c;
+      inQuote = c;
+    } else if (/\s/.test(c)) {
+      if (cur) { tokens.push(cur); cur = ''; }
+    } else {
+      cur += c;
+    }
+    i++;
+  }
+  if (cur) tokens.push(cur);
+  return tokens;
+}
+
+// 命令所有 mutation 目标都在白名单 → true
+// 任一目标无法解析 / 不在白名单 → false（保守不放行）
+function allTargetsWhitelisted(command) {
+  if (!command) return false;
+  const segments = command.split(/&&|\|\|?|;/);
+
+  let hasAnyTarget = false;
+  for (const raw of segments) {
+    const seg = raw.trim();
+    if (!seg) continue;
+    if (!segmentIsMutation(seg)) continue;
+    const targets = extractSegmentTargets(seg);
+    if (!targets || targets.length === 0) return false;
+    hasAnyTarget = true;
+    for (const t of targets) {
+      // 标准化：相对路径加前导斜杠才能匹配 isWhitelisted 的 "/todo/current.md" 子串
+      const normalized = t.startsWith('/') || t.startsWith('\\') ? t : '/' + t;
+      if (!isWhitelisted(normalized)) return false;
+    }
+  }
+  return hasAnyTarget;
+}
+
 // 导出用于单测
-module.exports = { isMutation, segmentIsMutation };
+module.exports = { isMutation, segmentIsMutation, extractSegmentTargets, allTargetsWhitelisted };

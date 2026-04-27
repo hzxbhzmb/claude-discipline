@@ -1,5 +1,67 @@
 # Changelog
 
+## 3.0.1 — 修死锁：Bash 写白名单文件 + deny 消息明确"用 Edit"（2026-04-28）
+
+### 背景
+
+v3.0.0 上线后真实用户场景暴露**自举死锁**：
+
+1. AI 想编辑非白名单源文件（如 `apps/web/src/foo.ts`）→ `pre-edit-write:handshake` deny，提示"先建任务段"
+2. AI 习惯用 Bash 重定向写文件（`tee -a` / `>>` / `cat <<EOF`）→ `check-bash-mutation` deny，提示"先建段+握手"
+3. AI 困惑："建段需要握手，握手需要建段" → 卡死
+
+实际有出路（用 Edit 工具直接编 `todo/current.md`，白名单允许），但 v3.0.0 的 deny 消息没明确指引，且 `check-bash-mutation` 的白名单逻辑跟 Edit/Write 链不对称。
+
+### 修复
+
+**A 修：deny 消息明确"用 Edit 工具"指引**
+
+- `_pre-checks.handshake` 无段 deny 消息加："💡 **请用 Edit 工具直接编辑 `todo/current.md`** 来新建任务段——current.md 在白名单内，可直接编辑无需先握手"
+- `check-bash-mutation` 两处 deny 消息（无段 / 有段无授权）都加同款提示
+
+**B 修：check-bash-mutation 对白名单 mutation 目标放行**
+
+新增 `extractSegmentTargets(seg)` 和 `allTargetsWhitelisted(command)` —— 解析 Bash 命令的 mutation 操作目标，若全部在白名单（`todo/current.md` / `archive/` / `methodology/` / `research/` / `CLAUDE.md` / `MEMORY.md` / `.claude/`）则放行，与 `pre-edit-write` 的白名单语义对等。
+
+**支持的命令模式**：
+- 重定向：`> FILE` / `>> FILE`（豁免 `/dev/null` / fd 复制）
+- `tee FILE` / `tee -a FILE`
+- `rm` / `rmdir` / `shred` / `truncate FILE`
+- `mv ... DST` / `cp ... DST` / `install ... DST`（取最后非 flag 参数）
+- `sed -i` / `awk -i inplace` / `perl -i FILE`
+- `dd of=FILE`
+- `git rm/mv/restore FILE`
+
+**保守原则**：解析失败（heredoc / 变量替换 / 复杂引号嵌套）→ 不放行（落到 v3.0.0 deny 行为，不会更糟）；混合命令（白名单 + 非白名单目标）→ 任一非白名单 → 整体 deny。
+
+`git reset / clean / checkout` 子命令的"目标"可能是整个工作树，保守不放行。
+
+### 测试
+
+`scripts/test-bash-mutation.js` 新增分组 I（11 断言）：
+
+- I1-I7：白名单命令放行（pipe tee / 重定向 / mv / sed -i / rm archive / >> CLAUDE.md / sed methodology）
+- I8：混合命令仍 deny（白名单 + 非白名单）
+- I9：mv 普通源文件仍 deny
+- I10：解析失败保守 deny
+- I11：deny 消息含"用 Edit 工具"指引
+
+### 升级影响（v3.0.0 → v3.0.1）
+
+**零动作平滑升级**。纯 bug 修复，无行为破坏：
+
+- 老用户 Bash 改源文件被拦的行为完全不变
+- 老用户被拦时 deny 消息变得更有指引（多了"用 Edit"提示）
+- 新放行：Bash 改 `todo/current.md` / `archive/` / `methodology/` / `research/` / `CLAUDE.md` / `MEMORY.md` / `.claude/` 不再需要握手——这些文件本来就是白名单（Edit/Write 链已经放行）
+
+### 回归验证
+
+- `test-bash-mutation.js` **70/70**（基线 59 + 新增 11）
+- 其它 4 测试套件零回归：33 + 16 + 40 + 43 = 132/132
+- 真机端到端 3 死锁场景：tee -a todo/current.md → allow ✓ / echo >> 非白名单 → deny ✓ / handshake deny 消息含"用 Edit" ✓
+
+---
+
 ## 3.0.0 — Hook 合并 + 删/降权低价值检查 + 规则文档去补丁化（2026-04-27）
 
 ### 背景
