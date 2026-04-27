@@ -17,65 +17,47 @@
 //   CLAUDE_DISCIPLINE_BYPASS=1 环境变量
 //   本会话最新任务段有 > ✅ 执行授权（含快车道）
 
-if (process.env.CLAUDE_DISCIPLINE_BYPASS === '1') process.exit(0);
-
 const fs = require('fs');
 const path = require('path');
+const { runHook, denyPre } = require('./_hook-runner');
 const { ownedSections, shortId } = require('./_session-util');
 
-let raw = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => raw += chunk);
-process.stdin.on('end', () => {
-  let input;
-  try { input = JSON.parse(raw); } catch (e) { process.exit(0); }
+runHook('check-bash-mutation', 'PreToolUse', (ctx) => {
+  if (ctx.toolName !== 'Bash') return;
+  if (!ctx.command) return;
+  if (!isMutation(ctx.command)) return;
+  if (!ctx.projectDir) return;
 
-  const toolName = input?.tool_name || '';
-  if (toolName !== 'Bash') process.exit(0);
-
-  const command = input?.tool_input?.command || '';
-  const sessionId = input?.session_id || '';
-  if (!command) process.exit(0);
-
-  if (!isMutation(command)) process.exit(0);
-
-  const projectDir = process.env.CLAUDE_PROJECT_DIR;
-  if (!projectDir) process.exit(0);
-
-  const todoFile = path.join(projectDir, 'todo', 'current.md');
+  const todoFile = path.join(ctx.projectDir, 'todo', 'current.md');
   let content;
   try {
     content = fs.readFileSync(todoFile, 'utf8');
   } catch (e) {
-    process.exit(0); // todo 不存在时不阻断（init 还没跑）
+    return; // todo 不存在时不阻断（init 还没跑）
   }
 
-  const sid = shortId(sessionId);
-  const mine = sid ? ownedSections(content, sessionId) : [];
+  const sid = shortId(ctx.sessionId);
+  const mine = sid ? ownedSections(content, ctx.sessionId) : [];
 
   if (mine.length === 0) {
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: [
-          '🚫 Bash 写操作被拒绝：本会话还没有建任务段（或建的段没带 session 标注）。',
-          '',
-          `命令：${command.slice(0, 120)}${command.length > 120 ? '…' : ''}`,
-          `你的会话 sessionId 短 ID：${sid || '(未知)'}`,
-          '',
-          '新规则（v2.1.0+）：Bash 里的 mv/cp/rm/sed -i/重定向/git reset --hard 等写操作',
-          '与 Edit/Write 同等对待——同样受三次握手保护，不能再用 Bash 绕过。',
-          '',
-          '请在 todo/current.md 末尾新建任务段：',
-          '```',
-          `## YYYY-MM-DD — 任务简述 <!-- session: ${sid} -->`,
-          '```',
-          '按三次握手写 **AI 理解** → 向用户确认 → 写 `> ✅ 执行授权`。',
-          '轻量任务可走快车道：单行 `> ✅ 执行授权：[快车道] {说明}`。',
-        ].join('\n')
-      }
-    }));
+    const reason = [
+      '🚫 Bash 写操作被拒绝：本会话还没有建任务段（或建的段没带 session 标注）。',
+      '',
+      `命令：${ctx.command.slice(0, 120)}${ctx.command.length > 120 ? '…' : ''}`,
+      `你的会话 sessionId 短 ID：${sid || '(未知)'}`,
+      '',
+      '新规则（v2.1.0+）：Bash 里的 mv/cp/rm/sed -i/重定向/git reset --hard 等写操作',
+      '与 Edit/Write 同等对待——同样受三次握手保护，不能再用 Bash 绕过。',
+      '',
+      '请在 todo/current.md 末尾新建任务段：',
+      '```',
+      `## YYYY-MM-DD — 任务简述 <!-- session: ${sid} -->`,
+      '```',
+      '按三次握手写 **AI 理解** → 向用户确认 → 写 `> ✅ 执行授权`。',
+      '轻量任务可走快车道：单行 `> ✅ 执行授权：[快车道] {说明}`。',
+    ].join('\n');
+    process.stdout.write(denyPre(reason));
+    ctx.deny('bash mutation, no session-tagged section');
     return;
   }
 
@@ -84,23 +66,19 @@ process.stdin.on('end', () => {
   const hasAuthorization = /^>\s*✅\s*执行授权/m.test(sectionText);
 
   if (!hasAuthorization) {
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: [
-          '🚫 Bash 写操作被拒绝：任务三次握手未完成。',
-          '',
-          `命令：${command.slice(0, 120)}${command.length > 120 ? '…' : ''}`,
-          `当前任务段：${latest.header}`,
-          '',
-          '新规则（v2.1.0+）：Bash 里的写/删/移操作与 Edit/Write 同等对待，',
-          '必须握手完成才能执行——不能再用 Bash 绕过。',
-          '',
-          '请在当前任务段写 **AI 理解** → 向用户确认 → 写 `> ✅ 执行授权：...`。',
-        ].join('\n')
-      }
-    }));
+    const reason = [
+      '🚫 Bash 写操作被拒绝：任务三次握手未完成。',
+      '',
+      `命令：${ctx.command.slice(0, 120)}${ctx.command.length > 120 ? '…' : ''}`,
+      `当前任务段：${latest.header}`,
+      '',
+      '新规则（v2.1.0+）：Bash 里的写/删/移操作与 Edit/Write 同等对待，',
+      '必须握手完成才能执行——不能再用 Bash 绕过。',
+      '',
+      '请在当前任务段写 **AI 理解** → 向用户确认 → 写 `> ✅ 执行授权：...`。',
+    ].join('\n');
+    process.stdout.write(denyPre(reason));
+    ctx.deny('bash mutation, no authorization');
   }
 });
 

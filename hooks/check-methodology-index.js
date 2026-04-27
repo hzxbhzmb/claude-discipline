@@ -1,24 +1,17 @@
 #!/usr/bin/env node
 // PreToolUse Hook: 写入 methodology 详情文件时，检查 _index.md 是否已在本会话中更新
-if (process.env.CLAUDE_DISCIPLINE_BYPASS === '1') process.exit(0);
+
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { runHook, denyPre } = require('./_hook-runner');
 
-let raw = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => raw += chunk);
-process.stdin.on('end', () => {
-  const input = JSON.parse(raw);
-  const filePath = input?.tool_input?.file_path || '';
-  const sessionId = input?.session_id || '';
-
-  if (!filePath) process.exit(0);
+runHook('check-methodology-index', 'PreToolUse', (ctx) => {
+  if (!ctx.filePath) return;
 
   // 确保 methodology/_index.md 存在（全局安装时项目可能还没初始化）
-  const projectDir = process.env.CLAUDE_PROJECT_DIR;
-  if (projectDir) {
-    const methodologyDir = path.join(projectDir, 'methodology');
+  if (ctx.projectDir) {
+    const methodologyDir = path.join(ctx.projectDir, 'methodology');
     const indexFile = path.join(methodologyDir, '_index.md');
     if (!fs.existsSync(indexFile)) {
       fs.mkdirSync(methodologyDir, { recursive: true });
@@ -27,21 +20,15 @@ process.stdin.on('end', () => {
   }
 
   // 只拦截 methodology/ 下的详情文件（非 _index.md 本身）
-  const inMethodologySubdir = (filePath.includes('/methodology/') || filePath.includes('\\methodology\\'))
-    && filePath.split(/[/\\]methodology[/\\]/)[1]?.includes(path.sep === '\\' ? '\\' : '/');
-  const isIndex = filePath.endsWith('_index.md');
+  const inMethodologySubdir = (ctx.filePath.includes('/methodology/') || ctx.filePath.includes('\\methodology\\'))
+    && ctx.filePath.split(/[/\\]methodology[/\\]/)[1]?.includes(path.sep === '\\' ? '\\' : '/');
+  const isIndex = ctx.filePath.endsWith('_index.md');
 
   if (inMethodologySubdir && !isIndex) {
-    const markerFile = path.join(os.tmpdir(), `claude-methodology-index-updated-${sessionId}`);
+    const markerFile = path.join(os.tmpdir(), `claude-methodology-index-updated-${ctx.sessionId}`);
     if (!fs.existsSync(markerFile)) {
-      const result = {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason: '⚠️ 你还没有更新 methodology/_index.md！写入方法论详情文件前，必须先更新索引文件 methodology/_index.md，确保新条目被索引。'
-        }
-      };
-      process.stdout.write(JSON.stringify(result));
+      process.stdout.write(denyPre('⚠️ 你还没有更新 methodology/_index.md！写入方法论详情文件前，必须先更新索引文件 methodology/_index.md，确保新条目被索引。'));
+      ctx.deny('methodology _index not updated');
     }
   }
 });

@@ -1,23 +1,17 @@
 #!/usr/bin/env node
 // PostToolUse Hook: 编辑 todo/current.md 后检查新任务段是否有达标标准
 // 规则：有 ## YYYY- 日期头的段落，紧跟的非空行必须是 > 达标标准：
-if (process.env.CLAUDE_DISCIPLINE_BYPASS === '1') process.exit(0);
+// 输出 stdout 软警告（不 deny）
+
 const fs = require('fs');
+const { runHook } = require('./_hook-runner');
 
-let raw = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => raw += chunk);
-process.stdin.on('end', () => {
-  const input = JSON.parse(raw);
-  const filePath = input?.tool_input?.file_path || '';
-
-  if (!filePath.includes('/todo/current.md') && !filePath.includes('\\todo\\current.md')) {
-    return;
-  }
+runHook('check-todo-acceptance', 'PostToolUse', (ctx) => {
+  if (!ctx.filePath.includes('/todo/current.md') && !ctx.filePath.includes('\\todo\\current.md')) return;
 
   let content;
   try {
-    content = fs.readFileSync(filePath, 'utf8');
+    content = fs.readFileSync(ctx.filePath, 'utf8');
   } catch (e) {
     return;
   }
@@ -56,5 +50,6 @@ process.stdin.on('end', () => {
   if (missingSections.length > 0) {
     const list = missingSections.map(s => `  - ${s}`).join('\n');
     process.stdout.write(`⚠️ 以下任务段缺少达标标准，请在日期头下方添加 \`> 达标标准：...\`：\n${list}`);
+    ctx.warn(`${missingSections.length} sections missing acceptance`);
   }
 });

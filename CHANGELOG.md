@@ -1,5 +1,60 @@
 # Changelog
 
+## 2.5.0 — 公共 hook 框架 + 可观测性日志（2026-04-27）
+
+### 背景
+
+诊断报告（`research/2026-04-27-discipline-refactor-diagnosis.md`）指出两个结构性问题：(a) 14 个 hook 头部各自重复 BYPASS / stdin / JSON.parse / projectDir 边界 / 白名单样板（14 份独立副本，2 处白名单逐字重复）；(b) 没有可观测性——v2.4.0 才发现 `check-todo-line-count.js` 因注册位置错从 v2.3 起一个月没生效，没人察觉。
+
+### 新增
+
+- **`hooks/_hook-runner.js`**（新）：公共 hook 运行框架。封装 BYPASS env 短路、stdin 读取 + JSON.parse、projectDir 边界、单一 `WHITELIST_FRAGMENTS` 来源。每个 hook 用 `runHook(name, event, handler)` 即可，不再各自写样板。导出 `denyPre / denyPost / isInProject / isWhitelisted` 工具函数。
+- **`hooks/_runtime-log.js`**（新）：可观测性日志。每次 hook 跑到末尾自动 `record({ hook, event, tool, denied, warned, reason })` 到 `~/.claude-discipline/runtime-YYYY-MM-DD.jsonl`（按日分文件，自然滚动，无需 prune）。失败安全（写不进去吞掉）。`CLAUDE_DISCIPLINE_NO_RUNTIME_LOG=1` 可关闭。
+- **`scripts/hook-stats.js`**（新）：runtime 日志统计工具。`node scripts/hook-stats.js [天数] [--by-reason]` 输出过去 N 天每个 hook 的触发次数、deny 次数、deny%、按 deny 原因分桶。
+
+### 重构
+
+14 个 hook 全部改写为使用 `_hook-runner` + `_runtime-log`，**判定逻辑零改动**：
+
+- `check-handshake.js` / `check-bash-mutation.js` / `check-todo-modified.js` / `check-todo-line-count.js` / `check-todo-write-forbidden.js` / `check-methodology-index.js`
+- `check-todo-verification.js` / `check-evidence-on-mark.js` / `check-todo-acceptance.js` / `check-verification-retry-limit.js`
+- `mark-todo-updated.js` / `mark-methodology-index-updated.js` / `log-tool-call.js` / `auto-archive.js`
+
+副作用：白名单从原来散落在 `check-handshake` + `check-todo-modified` 的两份逐字副本，统一为 `_hook-runner.js` 的单一 `WHITELIST_FRAGMENTS`——之后调整白名单只改一处。
+
+### 行为变化
+
+**对终端用户：零行为变化**。所有 deny 消息文本、阈值、判定规则、白名单都与 v2.4.0 完全一致。148 个测试断言全过证明行为不变。
+
+**新增可观测能力**（可选）：
+
+- 跑过任意 hook 后，`~/.claude-discipline/runtime-YYYY-MM-DD.jsonl` 会有日志条目
+- 用 `node scripts/hook-stats.js` 看 hook 触发分布——哪些 hook 真在工作、哪些可能形同虚设
+- 此前 v2.4.0 那种"一个月没人发现 hook 没生效"的事故，现在可以一行命令检测
+
+### 升级影响（v2.4.0 → v2.5.0）
+
+**零动作平滑升级**：
+
+- 现有任务段格式不变，老段继续有效
+- hooks.json 注册项不变（hook 文件名、matcher、event 全一致）
+- 老用户的 `/tmp/claude-evidence-*.jsonl` 和 `claude-todo-updated-*` marker 文件**继续被新版读写**，行为完全保留
+- 老的 `methodology/` / `research/` / `todo/archive/` 内容完全不动
+- `CLAUDE_DISCIPLINE_BYPASS=1` env 行为不变
+- v2.4 的"current.md >200 行硬阻断 + 白名单 + 归档死锁规避"行为完全保留
+
+**新增可选 env**：`CLAUDE_DISCIPLINE_NO_RUNTIME_LOG=1` 关闭可观测性日志（默认开启，写入 `~/.claude-discipline/`）。
+
+### 回归验证
+
+- `test-multi-session.js` 33/33 通过
+- `test-bash-mutation.js` 59/59 通过
+- `test-verification-retry.js` 16/16 通过
+- `test-archive.js` 40/40 通过
+- E2E 真实触发：手工喂 hook PreToolUse Edit 输入 → runtime-log 写入 deny 记录正确 → hook-stats.js 156 条统计结果合理
+
+---
+
 ## 2.4.0 — 归档按日分文件 + 月子目录 + 追加位置规则（2026-04-26）
 
 ### 背景

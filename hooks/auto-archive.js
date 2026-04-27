@@ -18,6 +18,7 @@ if (process.env.CLAUDE_DISCIPLINE_BYPASS === '1') process.exit(0);
 const fs = require('fs');
 const path = require('path');
 const { splitSections } = require('./_session-util.js');
+const runtimeLog = require('./_runtime-log.js');
 
 const projectDir = process.env.CLAUDE_PROJECT_DIR;
 if (!projectDir) process.exit(0);
@@ -130,6 +131,8 @@ function main() {
 
 try {
   main();
+  runtimeLog.record({ hook: 'auto-archive', event: 'SessionStart', tool: '', denied: false });
 } catch (e) {
   process.stderr.write(`⚠️ auto-archive 失败（不阻塞会话）: ${e.message}\n`);
+  runtimeLog.record({ hook: 'auto-archive', event: 'SessionStart', tool: '', denied: false, warned: true, reason: e.message });
 }
