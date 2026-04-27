@@ -34,67 +34,52 @@ cd claude-discipline
 
 安装后，`todo/` 和 `methodology/` 目录会在每个项目首次会话时自动创建。
 
-### 升级指南（从旧版本 → 多会话版本）
-
-如果你之前装过本插件的老版本（不支持多会话并发），新版本带来一个**硬规则变化**和一个**新拦截点**，可能影响你正在进行的任务。
+### 升级指南
 
 #### 升级这件事本身
 
 - **Marketplace 用户**：`/plugin update claude-discipline` 后重启会话
 - **手动安装用户**：在插件目录 `git pull` 后重启会话
 
-重启后，SessionStart 会做三件事：
-1. 告诉 AI 本会话的 **sessionId 短 ID**（8 位），AI 后续建任务段时会自动在标题末尾加 `<!-- session: xxxxxxxx -->`
-2. **自动认领**一个正在进行中的祖传段（如果有），把 session 标注贴上去——B 类用户升级零动作
-3. 只清理自己会话或 >24h 陈旧的证据日志，不碰其它活跃会话
+重启后即生效。**没有任何手工迁移动作**。
 
-#### 行为变更清单
+#### v2.x → v3.0.0 升级（最近一次版本）
 
-| 项 | 旧版本 | 新版本 |
-|---|---|---|
-| **任务段标题格式** | `## YYYY-MM-DD — 任务简述` | `## YYYY-MM-DD — 任务简述 <!-- session: xxxxxxxx -->`（AI 建段时自动加） |
-| **握手检查** | 看 todo 最后一个任务段是否有 `✅ 执行授权` | 只看**本会话**标注的任务段；没建 = deny |
-| **验算检查** | 扫整个 todo，任一段全 [x] 无验算 → deny（会**连坐**别的会话） | 只扫本会话段；祖传段 / 他会话段**不连坐** |
-| **Write `todo/current.md`** | 允许 | **拒绝**（必须用 Edit 增量改，防并发吞段） |
-| **证据日志清理** | SessionStart 无差别清空所有 `/tmp/claude-evidence-*` | 只清自己会话或 >24h 陈旧文件，不动其它活跃会话 |
+**结论：零动作平滑升级。** 你不需要改任务段、不需要改 todo 文件、不需要清缓存。
 
-**核心概念："祖传段"**：标题没带 `<!-- session: xxxxxxxx -->` 标注的任务段。新版本对祖传段一律**透明处理**——既不拦截，也不连坐任何会话。所以升级时你**不需要**回头改历史段。
+**对你（用户）的可见变化**：
+- 编辑 `methodology/` 详情前没更新 `_index.md` → 从 deny 改为 stdout 软警告（不再阻断工作流）
+- `~/.claude-discipline/runtime-YYYY-MM-DD.jsonl` 开始累积 hook 触发日志（可用 `node scripts/hook-stats.js` 看）
+- 跑 `node scripts/hook-stats.js` 能看到子检查级别的 deny 分布（`pre-edit-write:handshake` / `post-edit-write:verification` 等粒度）
 
-#### 按情况升级
+**对你（用户）不可见的变化**（plugin 内部）：
+- 9 个老 hook 文件被 git 自动删除（`/plugin update` = git pull 同步删）
+- 新增公共框架 `_hook-runner.js` + 子检查模块 `_pre-checks.js` / `_post-checks.js` + 合并入口 `pre-edit-write.js` / `post-edit-write.js`
+- `hooks.json` 注册项从 12 个串行 hook 缩到 6 个入口（每次 Edit/Write 启动 node 进程数 11→2，-82%）
+- 规则文档拆分：`rules/discipline.md` 233→120 行（SessionStart 注入），新增 `concurrency.md` + `troubleshooting.md` 按需读
 
-**A. 没有进行中任务（手上没活在干）**
+**不会丢任何状态**：现有任务段格式不变；带 session 标注的进行中段继续被新 hook 识别；祖传无标注段自动认领机制保留；`/tmp/claude-evidence-*.jsonl` 证据日志兼容；老 marker 文件残留无害（不再被读 = 系统垃圾，OS 重启清掉）；`methodology/` / `research/` / `todo/archive/` 完全不动；所有 env 变量保留。
 
-直接升级。下次发新任务时，AI 会按新格式建段。✅ 结束。
+#### v1.x → v2.x 升级（多会话支持）
 
-**B. 有一个正在进行的任务段（还没验算通过）**
+如果你的 plugin 还停留在多会话之前的版本，重启后 SessionStart 会做三件事：
+1. 告诉 AI 本会话的 **sessionId 短 ID**（8 位），AI 后续建任务段会自动在标题末尾加 `<!-- session: xxxxxxxx -->`
+2. **自动认领**最近一个进行中的祖传段（如果有），把 session 标注贴上去
+3. 只清自己会话或 >24h 陈旧证据日志，不碰其它活跃会话
 
-**零动作升级**。重启会话时 `init-project.js` 会自动扫描 `todo/current.md`，找到**最近一个进行中的祖传段**（非归档、无 session 标注、含至少一个 `- [ ]` 未勾子任务），把本会话 `<!-- session: xxxxxxxx -->` 标注贴到段标题末尾。AI 会在 SessionStart 注入的规则里看到一条"自动认领通知"，然后可以无缝继续你原来的任务。
+**核心概念："祖传段"**：标题没带 `<!-- session: xxxxxxxx -->` 标注的任务段。新版本对祖传段一律**透明处理**——既不拦截，也不连坐任何会话。
 
-```markdown
-## 2026-04-15 — 你正在做的任务                                ← 升级前
-↓ SessionStart 自动改写
-## 2026-04-15 — 你正在做的任务 <!-- session: abcd1234 -->     ← 升级后
-```
+**按情况升级**：
 
-**认领规则**（防误认领）：
-- 已归档（`## 归档说明` 段）：不认领
-- 已带任何 session 标注：不认领（可能是别的会话正用着）
-- 纯空段（无 `- [ ]` 也无 `- [x]`）：不认领
-- 全部 `- [x]` 已完成：不认领（已完工的不是你"在做"的任务）
+- **A 没有进行中任务**：直接升级。下次发新任务时 AI 会按新格式建段。
+- **B 有进行中任务段**：零动作。`init-project.js` 自动认领最近一个非归档、无标注、含 `[ ]` 的段——AI 在注入规则里看到"自动认领通知"，无缝继续。
+- **C 历史段很多**：不用管。祖传段对新版本透明。
 
-**多个候选段时**：取文件里**最后**一个（最近建的）。如果真的有多个同时在做但都没标注，剩下的仍是祖传段——对新 hook 透明不碍事，让 AI 在做到那个任务时顺手 Edit 加标注即可。
+**认领规则**（防误认领）：已归档段不认领；已带 session 标注不认领；纯空段不认领；全 `[x]` 已完成不认领。多候选时取文件中最后一个（最近建的）。
 
-**C. todo 里有很多历史已归档或已验算段**
+#### 升级失败逃生
 
-完全不用管。祖传段对新版本透明。只关心 B 里那个**当前在做的段**即可。
-
-#### 验证升级成功（3 步自测）
-
-1. **Hook 已生效**：重启会话后查看 SessionStart 注入的规则，末尾应有"## 本会话身份"段 + 你的 8 位短 ID
-2. **握手过滤对了**：让 AI 新建一个带标注的任务段 → 写授权 → 编辑任一源文件，应通过
-3. **拦截 Write**：让 AI 用 Write 工具整覆盖 `todo/current.md` → 应被 `check-todo-write-forbidden.js` 拒绝
-
-跑不通或有疑惑，在任何一步前设 `CLAUDE_DISCIPLINE_BYPASS=1` 环境变量可临时跳过全部检查。
+任何步骤不顺，设 `CLAUDE_DISCIPLINE_BYPASS=1` 环境变量临时跳过全部 hook。
 
 ## 工作流程
 
@@ -223,7 +208,7 @@ cd claude-discipline
 
 ## 验算失败处理（v2.2.0+）
 
-验算不保证一次过。旧版规则只说"验算通过就收尾"，没说失败怎么办——AI 可能无限 silent 改到过为止，烧 token 且用户完全失去知情权。v2.2.0 新增 `check-verification-retry-limit.js` + 三种失败段类型结构化这个流程。
+验算不保证一次过。旧版规则只说"验算通过就收尾"，没说失败怎么办——AI 可能无限 silent 改到过为止，烧 token 且用户完全失去知情权。v2.2.0 新增**验算失败迭代上限** + 三种失败段类型结构化这个流程（v3.0.0 起逻辑搬到 `_post-checks.retryLimit` 子检查）。
 
 ### 三种段类型
 
@@ -273,23 +258,34 @@ export DISCIPLINE_VERIFY_RETRY_LIMIT=5
 
 验算方案在**第二次握手（SYN-ACK）**时就规划好，经用户确认后才执行。
 
-## Hook 一览
+## Hook 一览（v3.0.0+）
 
-| Hook | 触发时机 | 效果 |
+`hooks.json` 注册 6 个入口：
+
+| 入口 | 触发时机 | 内容 |
 |------|---------|------|
-| **check-todo-modified** | PreToolUse Edit/Write | 未更新 todo → **拒绝** |
-| **check-handshake** | PreToolUse Edit/Write | 本会话没建带 session 标注的任务段 / 最新段无 `> ✅ 执行授权` → **拒绝** |
+| **init-project** | SessionStart | 初始化目录 + 注入规则 + 注入本会话 sessionId 短 ID + 自动认领祖传段 |
+| **auto-archive** | SessionStart | 把 `todo/current.md` 已完成段搬到 `todo/archive/YYYY-MM/YYYY-MM-DD.md` |
+| **pre-edit-write**（合并） | PreToolUse Edit/Write | 单 node 进程串行 4 子检查：`handshake` → `methodologyIndex`（软警告） → `writeForbidden` → `lineCount` |
 | **check-bash-mutation** | PreToolUse Bash | Bash 里 mv/sed -i/rm/重定向/git reset --hard 等写操作，无握手授权 → **拒绝**（v2.1.0+） |
-| **check-methodology-index** | PreToolUse Edit/Write | 编辑 methodology 详情前未更新索引 → **拒绝** |
-| **check-todo-write-forbidden** | PreToolUse Write | 用 Write 整覆盖 `todo/current.md` → **拒绝**（必须用 Edit，防并发吞段） |
 | **log-tool-call** | PostToolUse（所有工具） | 记录工具调用到会话证据日志 `/tmp/claude-evidence-${sessionId}.jsonl` |
-| **mark-todo-updated** | PostToolUse Edit/Write | 标记本会话已更新 todo |
-| **mark-methodology-index-updated** | PostToolUse Edit/Write | 标记本会话已更新 methodology 索引 |
-| **check-todo-line-count** | PostToolUse Edit/Write | todo 超 80 行 → **警告归档** |
-| **check-todo-acceptance** | PostToolUse Edit/Write | 任务段缺达标标准 → **警告** |
-| **check-todo-verification** | PostToolUse Edit/Write | 本会话段全 `[x]` 无验算行 → **拒绝**（祖传段/他会话段不连坐） |
-| **check-evidence-on-mark** | PostToolUse Edit/Write | 标记 `[x]` 或写验算无工具证据 → **拒绝**；研究类子任务还需有 `research/` 写入 |
-| **check-verification-retry-limit** | PostToolUse Edit/Write | 本会话最新段 `> ❌ 验算第 N 次失败` 累计 > 3（默认）且无"最终失败"行 → **拒绝**（v2.2.0+）|
+| **post-edit-write**（合并） | PostToolUse Edit/Write | 单 node 进程串行 5 子检查：`markMethodologyIndex` → `acceptance`（软警告） → `verification` → `evidenceOnMark` → `retryLimit` |
+
+### 子检查（合并入口里串行跑的逻辑）
+
+| 子检查 | 来自 | 行为 |
+|--------|------|------|
+| `handshake` | `_pre-checks.handshake` | 本会话没建带 session 标注的任务段 / 最新段无 `> ✅ 执行授权` → **拒绝** |
+| `methodologyIndex` | `_pre-checks.methodologyIndex` | 编辑 methodology 详情前未更新 `_index.md` → stdout 软警告（v3.0.0 从 deny 降级） |
+| `writeForbidden` | `_pre-checks.writeForbidden` | 用 Write 整覆盖 `todo/current.md` → **拒绝** |
+| `lineCount` | `_pre-checks.lineCount` | `current.md` >200 行（默认）且目标非 current/非 archive → **拒绝**（避免归档死锁） |
+| `markMethodologyIndex` | `_post-checks.markMethodologyIndex` | 编辑 `methodology/_index.md` 后写 marker（让 methodologyIndex pre-check 知道 _index 更新过） |
+| `acceptance` | `_post-checks.acceptance` | 任务段缺达标标准 → stdout 软警告 |
+| `verification` | `_post-checks.verification` | 本会话段全 `[x]` 无验算行 → **拒绝**（祖传段/他会话段不连坐） |
+| `evidenceOnMark` | `_post-checks.evidenceOnMark` | 标 `[x]` 或写验算无工具证据 → **拒绝**；研究类子任务还需有 `research/` 写入 |
+| `retryLimit` | `_post-checks.retryLimit` | 本会话最新段 `> ❌ 验算第 N 次失败` 累计 >3（默认）且无"最终失败"行 → **拒绝**（v2.2.0+）|
+
+子检查按子检查名独立 record 到 runtime 日志（`pre-edit-write:handshake` / `post-edit-write:verification` 等粒度），`hook-stats.js` 仍能按子检查分桶。
 
 所有 hook 检查 `CLAUDE_DISCIPLINE_BYPASS=1` 环境变量——设置后跳过所有检查。
 
@@ -302,37 +298,41 @@ export DISCIPLINE_VERIFY_RETRY_LIMIT=5
 3. **禁止 Write 整覆盖 `todo/current.md`**：一刀切拒绝 Write，必须用 Edit 增量改动。Edit 的 old_string 精确匹配是天然的乐观锁——并发会话 append 新段时即使竞态，失败的一方只是 Edit 匹配不到，重试即可，绝不会静默丢段。
 4. **升级零摩擦——自动认领祖传段**：老用户升级时，SessionStart 自动把"最近一个进行中的祖传段"（非归档、无 session 标注、含 `[ ]`）贴上本会话标注，用户无需手工编辑。AI 会在注入的规则里看到"自动认领通知"，然后无缝继续工作。详见[升级指南](#升级指南从旧版本--多会话版本)。
 
-## 插件结构
+## 插件结构（v3.0.0+）
 
 ```
 claude-discipline/
 ├── .claude-plugin/
 │   └── plugin.json                      # 插件清单
-├── hooks/
-│   ├── hooks.json                       # Hook 注册
-│   ├── _session-util.js                 # 共用工具：按 session 过滤任务段 + 祖传段自动认领
-│   ├── check-handshake.js               # 三次握手检查（按本会话过滤）
-│   ├── check-bash-mutation.js           # Bash 写操作握手保护（v2.1.0+）
-│   ├── check-verification-retry-limit.js # 验算失败迭代上限（v2.2.0+）
-│   ├── check-evidence-on-mark.js        # 证据链检查
-│   ├── check-methodology-index.js       # 方法论索引检查
-│   ├── check-todo-acceptance.js         # 达标标准检查
-│   ├── check-todo-line-count.js         # 归档提醒
-│   ├── check-todo-modified.js           # todo 更新检查
-│   ├── check-todo-verification.js       # 验算行检查（按本会话过滤，不连坐祖传段）
-│   ├── check-todo-write-forbidden.js    # 禁止 Write 整覆盖 todo/current.md
-│   ├── log-tool-call.js                 # 工具调用日志（按 sessionId 分文件）
-│   ├── mark-methodology-index-updated.js
-│   └── mark-todo-updated.js
-├── rules/
-│   └── discipline.md                    # 纪律规则（SessionStart 自动注入）
+├── hooks/                               # 10 个 .js 文件，零死代码
+│   ├── hooks.json                       # 注册 6 个入口
+│   ├── _hook-runner.js                  # 公共框架：BYPASS / stdin / projectDir / 单一白名单
+│   ├── _runtime-log.js                  # 可观测性：按日分文件写 ~/.claude-discipline/runtime-*.jsonl
+│   ├── _session-util.js                 # 多会话工具：按 session 过滤段 + 祖传段自动认领
+│   ├── _pre-checks.js                   # 4 个 PreToolUse Edit/Write 子检查（纯函数）
+│   ├── _post-checks.js                  # 5 个 PostToolUse Edit/Write 子检查（纯函数）
+│   ├── pre-edit-write.js                # PreToolUse Edit/Write 合并入口（hooks.json 注册）
+│   ├── post-edit-write.js               # PostToolUse Edit/Write 合并入口（hooks.json 注册）
+│   ├── check-bash-mutation.js           # PreToolUse Bash 独立 hook（v2.1.0+）
+│   ├── log-tool-call.js                 # PostToolUse 全工具证据日志（按 sessionId 分文件）
+│   └── auto-archive.js                  # SessionStart 自动归档完成段
+├── rules/                               # 主文件 SessionStart 注入；其它按需读
+│   ├── discipline.md                    # 主规则（120 行，SessionStart 自动注入）
+│   ├── concurrency.md                   # 多会话并发完整规则（46 行）
+│   └── troubleshooting.md               # BYPASS / 失败处理 / 归档 / 可观测性 / Hook 一览（96 行）
 └── scripts/
-    ├── init-project.js                  # 会话初始化：建目录 + 安全清理证据日志 + 注入规则 + 自动认领祖传段 + 注入本会话短 ID
-    ├── test-multi-session.js            # 单元级反向验证（33 断言：A/B/C/D 四组）
-    ├── test-e2e-concurrent.js           # 端到端并发 + 升级场景 e2e 验证（43 断言）
-    ├── test-bash-mutation.js            # Bash 写保护反向验证（59 断言：8 分组）
-    └── test-verification-retry.js       # 验算失败上限反向验证（16 断言：8 分组）
+    ├── init-project.js                  # SessionStart：建目录 + 注入规则 + 注入 sessionId + 自动认领祖传段
+    ├── hook-stats.js                    # 可观测性统计：过去 N 天 hook 触发/deny 分布（v2.5.0+）
+    ├── migrate-archive-to-daily.js      # 一次性迁移：archive/YYYY-MM.md → archive/YYYY-MM/YYYY-MM-DD.md
+    ├── test-multi-session.js            # 单元级反向验证（33 断言）
+    ├── test-e2e-concurrent.js           # 端到端并发 + 升级场景 e2e（43 断言）
+    ├── test-bash-mutation.js            # Bash 写保护反向验证（59 断言）
+    ├── test-verification-retry.js       # 验算失败上限反向验证（16 断言）
+    └── test-archive.js                  # 归档 + 行数硬阻断反向验证（40 断言）
 ```
+
+**测试总计 191 断言**（5 套件全过）。
+**核心收益**：每次 Edit/Write 启动 node 进程数 11 → 2（-82%）。
 
 ## 方法论分级存放
 
@@ -346,31 +346,49 @@ methodology/ 采用**渐进式披露**设计：
 
 ## 自定义
 
-### 白名单
+### 白名单（v3.0.0+ 单一来源）
 
-`hooks/check-todo-modified.js` 和 `hooks/check-handshake.js` 中定义了**项目目录内**不受管控的目录白名单：
+`hooks/_hook-runner.js` 中 `WHITELIST_FRAGMENTS` 是**项目目录内**不受握手管控的路径片段（v2.x 时这份白名单在 `check-handshake` 和 `check-todo-modified` 各有一份逐字副本，v3.0.0 统一）：
 
 ```javascript
-const whiteList = [
-  p => p.includes('/todo/current.md'),
-  p => p.includes('/todo/archive/'),
-  p => p.includes('/CLAUDE.md'),
-  p => p.includes('/MEMORY.md'),
-  p => p.includes('/methodology/'),
-  p => p.includes('/research/'),
-  p => p.includes('/.claude/'),
-  // 可按需增减
+const WHITELIST_FRAGMENTS = [
+  '/todo/current.md', '\\todo\\current.md',
+  '/todo/archive/',   '\\todo\\archive\\',
+  '/CLAUDE.md',       '\\CLAUDE.md',
+  '/MEMORY.md',       '\\MEMORY.md',
+  '/methodology/',    '\\methodology\\',
+  '/research/',       '\\research\\',
+  '/.claude/',        '\\.claude\\',
 ];
 ```
 
-**项目目录外的路径**（`CLAUDE_PROJECT_DIR` 之外）无需加白名单，两个 hook 默认豁免，详见[快车道模式](#快车道模式轻量任务豁免)。
+`isWhitelisted(filePath)` 在所有 PreToolUse Edit/Write 子检查里调用——改这一处即全局生效。
 
-### 归档阈值
+**项目目录外的路径**（`CLAUDE_PROJECT_DIR` 之外）无需加白名单，hook 默认豁免，详见[快车道模式](#快车道模式轻量任务豁免)。
 
-`hooks/check-todo-line-count.js` 中的 80 行阈值可调整：
-```javascript
-if (lineCount > 80) { ... }
+### 环境变量
+
+| Env | 默认 | 作用 |
+|-----|------|------|
+| `CLAUDE_DISCIPLINE_BYPASS=1` | 关 | 整个 hook 体系短路（紧急逃生） |
+| `DISCIPLINE_TODO_HARD_LIMIT=N` | 200 | `current.md` 行数硬阻断阈值 |
+| `DISCIPLINE_VERIFY_RETRY_LIMIT=N` | 3 | 验算失败迭代上限 |
+| `CLAUDE_DISCIPLINE_NO_RUNTIME_LOG=1` | 关 | 关闭 `~/.claude-discipline/runtime-*.jsonl` 写入（v2.5.0+） |
+
+## 可观测性（v2.5.0+）
+
+每次 hook 跑都自动记录到 `~/.claude-discipline/runtime-YYYY-MM-DD.jsonl`（按日分文件，自然滚动）。统计：
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/hook-stats.js              # 过去 7 天
+node ${CLAUDE_PLUGIN_ROOT}/scripts/hook-stats.js 30           # 过去 30 天
+node ${CLAUDE_PLUGIN_ROOT}/scripts/hook-stats.js --by-reason  # 按 deny 原因分桶
 ```
+
+输出每个 hook 的触发次数、deny 次数、deny%。**用途**：
+- 哪些 hook 真在工作 / 哪些 deny 高频
+- triggered = 0 的 hook 可能注册位置错了（参考 v2.4.0 line-count 事故：从 v2.3 起一个月没生效，没人察觉）
+- deny% 极低且 triggered 大的 hook 可能是低价值候选删除
 
 ## 许可
 
