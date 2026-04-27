@@ -82,8 +82,11 @@ function denyPost(reason) {
 
 // 主入口：读 stdin → 解析 → 调 handler(ctx)
 // hookName / event 用于可观测性日志
-function runHook(hookName, event, handler) {
+//
+// opts.silent=true：runHook 不自动 record（合并 hook 文件用，子检查自己 record）
+function runHook(hookName, event, handler, opts = {}) {
   if (process.env.CLAUDE_DISCIPLINE_BYPASS === '1') return process.exit(0);
+  const silent = opts.silent === true;
 
   let raw = '';
   process.stdin.setEncoding('utf8');
@@ -131,8 +134,8 @@ function runHook(hookName, event, handler) {
       process.stderr.write(`⚠️ hook ${hookName} 执行异常: ${e.message}\n`);
     }
 
-    // handler 没显式记录 → 默认 allow
-    if (!recorded) ctx.allow();
+    // handler 没显式记录 → 默认 allow（除非 silent 模式，由调用方自管）
+    if (!recorded && !silent) ctx.allow();
   });
 }
 

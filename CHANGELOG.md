@@ -1,5 +1,113 @@
 # Changelog
 
+## 3.0.0 — Hook 合并 + 删/降权低价值检查 + 规则文档去补丁化（2026-04-27）
+
+### 背景
+
+诊断报告（`research/2026-04-27-discipline-refactor-diagnosis.md`）方案 B + C + D 一次性落地。延续 v2.5.0 的方案 A + E（公共框架 + 可观测性），本版本进一步：(B) 把 5+6 个独立 hook 合并到 2 个合并入口，每次 Edit/Write 启动 11 个 node 进程减为 2 个；(C) 删除被握手隐含语义的冗余 hook + 把不重要的 hook 降级为软警告；(D) 重写规则文档，把 SessionStart 注入的主文档从 233 行砍到 120 行。
+
+### B 阶段：Hook 合并（启动开销 11 进程 → 2 进程）
+
+新增**子检查模块**（纯逻辑，可被多入口 require）：
+
+- **`hooks/_pre-checks.js`**：4 个 PreToolUse Edit/Write 子检查（handshake / methodologyIndex / writeForbidden / lineCount）
+- **`hooks/_post-checks.js`**：5 个 PostToolUse Edit/Write 子检查（markMethodologyIndex / acceptance / verification / evidenceOnMark / retryLimit）
+
+新增**合并入口**（hooks.json 注册）：
+
+- **`hooks/pre-edit-write.js`**：单 node 进程串行跑 4 个 pre-check。任一 deny 立即返回，warn 走 stdout 但继续。
+- **`hooks/post-edit-write.js`**：单 node 进程串行跑 5 个 post-check。同样语义。
+
+**hooks.json** 从 95 行 → 41 行。PreToolUse Edit/Write 串行链 5 hook → 1 个；PostToolUse Edit/Write 串行链 6 hook → 1 个。
+
+**子检查可观测性**：每个子检查独立 record 到 `~/.claude-discipline/runtime-*.jsonl`，hook 名 `pre-edit-write:<sub>` / `post-edit-write:<sub>`。`hook-stats.js` 仍按子检查分桶。
+
+### C 阶段：删/降权低价值 hook（基于诊断 § 2.6 + § 2.7）
+
+**删除**：
+
+- **`hooks/check-todo-modified.js`**：语义被 handshake 隐含——handshake 要求本会话已建任务段，建段必然 Edit 了 todo，因此独立的"todo 是否被本会话编辑过"检查冗余。
+- **`hooks/mark-todo-updated.js`**：上面那个 hook 的 marker 来源，一并删除。
+
+**降级（deny → 软警告）**：
+
+- **`check-methodology-index`**：从 PreToolUse deny 改为 stdout 软警告。methodology 写入频率极低、强制成本/收益比差。降级后老用户工作流不被打断，AI 仍能看到提示。
+
+### D 阶段：规则文档去补丁化（AI 心智负担减半）
+
+**`rules/discipline.md`** 233 行 → **120 行**（SessionStart 注入只读这一份）：
+
+- 删除所有 `v2.x+` 版本号引用（AI 不需要知道历史，只需要知道当前规则）
+- 反模式清单 10 条 → 5 条（合并语义相近的）
+- 验算反向表 4 例 → 2 例
+- 任务段格式示例 5 行 AI 理解 → 1 行
+- 多会话并发段从 8 行 → 1 行 + 链到 `concurrency.md`
+- 工具层豁免段紧凑化
+
+**新增**：
+- **`rules/concurrency.md`** 46 行：完整多会话规则（任务段归属 / Write 禁止 / 证据日志隔离 / 自动认领 / 祖传段）
+- **`rules/troubleshooting.md`** 96 行：BYPASS env / 验算失败处理 / 归档机制 / 可观测性 / Hook 一览 / v3.0.0 升级影响
+
+**注入策略**：仅 `discipline.md` SessionStart 注入。`concurrency.md` 和 `troubleshooting.md` 按需读——hook deny 消息可指向，AI 在涉及多会话/边界 case 时主动 Read。
+
+### 删除测试不再依赖的老 hook 文件（X 方案彻底清理）
+
+`hooks.json` 注册的入口已经只剩 6 个，老 14 个 hook 薄包装文件 Claude Code 也不会触发——纯粹是死代码。本版本测试改用 `runCheck(checkFn, ctx)` 直接调子检查模块（不 spawn 进程，更快），从而彻底删除 9 个老 hook 文件：
+
+**删除**：`check-handshake.js` / `check-todo-verification.js` / `check-todo-write-forbidden.js` / `check-todo-line-count.js` / `check-verification-retry-limit.js` / `check-evidence-on-mark.js` / `check-methodology-index.js` / `check-todo-acceptance.js` / `mark-methodology-index-updated.js`
+
+**保留**（hooks.json 仍注册的独立 hook）：`check-bash-mutation.js` / `auto-archive.js` / `log-tool-call.js`
+
+**保留**（公共库/模块）：`_hook-runner.js` / `_runtime-log.js` / `_session-util.js` / `_pre-checks.js` / `_post-checks.js`
+
+**保留**（hooks.json 注册的合并入口）：`pre-edit-write.js` / `post-edit-write.js`
+
+**最终 `hooks/*.js` 文件清单：10 个，零死代码**。
+
+测试套件改动：5 个 `test-*.js` 文件加了 `runCheck()` helper（直接调子检查函数，模拟 spawn 风格的返回供原有断言复用），原 `runHook('hooks/check-X.js', ...)` 调用改为 `runCheck(preChecks.X, ...)` 或 `runCheck(postChecks.X, ...)`。**断言文本零修改**。
+
+### 平滑升级承诺（marketplace 用户）
+
+**`/plugin update claude-discipline` 后零动作生效**：
+
+- ✓ 现有任务段格式不变；带 session 标注的进行中段继续被新 hook 识别
+- ✓ 祖传无标注段 SessionStart 自动认领机制保留
+- ✓ 握手段格式（`> ✅ 执行授权` / `> ❌ 验算第 N 次失败` / `> ✅ 验算通过` / `> ✅ 完成` / `> ❌ 最终验算失败`）关键字保留
+- ✓ `/tmp/claude-evidence-*.jsonl` 证据日志格式不变
+- ✓ 老 marker 文件 `/tmp/claude-todo-updated-*` / `claude-methodology-index-updated-*` 残留无害（不再被读 = 系统垃圾，OS 重启清掉）
+- ✓ `methodology/` / `research/` / `todo/archive/` 内容完全不动
+- ✓ 老的 `> ✅ 验算通过` / `> ✅ 完成` 标记继续被 auto-archive 识别
+- ✓ `CLAUDE_DISCIPLINE_BYPASS=1` env 行为不变
+- ✓ v2.4.0 的"current.md >200 行硬阻断 + 白名单 + 归档死锁规避"行为完全保留
+- ✓ 用户**只通过 hooks.json 间接调 hook**——文件名变化对 marketplace 升级无影响
+
+**新行为**：
+
+- AI 编辑 `methodology/` 详情前未更新 `_index.md` → 从 deny 变为 stdout 软警告（不阻断工作流）
+- 编辑非白名单文件前没建 todo 任务段不再被 `check-todo-modified` 单独拦——但仍被 `pre-edit-write:handshake` 拦（语义等价）
+
+### 行数对账
+
+| 项 | 基线（v2.4.0） | v3.0.0 | 变化 |
+|---|---|---|---|
+| `hooks/*.js` 总行数 | 1191 | ~1180 | 持平（子检查模块新增；删 11 个老 hook 抵消） |
+| `hooks/hooks.json` | 95 | 41 | **-57%** |
+| `rules/discipline.md`（SessionStart 注入） | 233 | **120** | **-49%** |
+| `rules/` 总（含 concurrency + troubleshooting） | 233 | 262 | +12%（按需读） |
+| **Hook .js 文件数** | 15 | **10** | **-33%**（无死代码） |
+| **每次 Edit/Write 启动 node 进程数** | **11** | **2** | **-82%**（核心收益） |
+| **每次 Edit/Write 主流程读 `current.md` 次数** | 多次（每个 hook 各自读） | 子检查最多读 2 次 | 文件 IO 显著降低 |
+
+### 回归验证
+
+- `test-multi-session.js` 33/33 通过
+- `test-bash-mutation.js` 59/59 通过
+- `test-verification-retry.js` 16/16 通过
+- `test-archive.js` 40/40 通过
+- 端到端 5 场景干跑：无握手 deny ✓ / 有握手 allow ✓ / Bash mv 无握手 deny ✓ / 200 行硬阻断 deny ✓ / 全 [x] 无验算 deny ✓
+
+---
+
 ## 2.5.0 — 公共 hook 框架 + 可观测性日志（2026-04-27）
 
 ### 背景

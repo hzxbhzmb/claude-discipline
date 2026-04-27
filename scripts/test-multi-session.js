@@ -21,7 +21,8 @@ function record(name, passed, detail = '') {
   console.log(`${mark} ${name}${detail ? '  — ' + detail : ''}`);
 }
 
-// 跑 hook 脚本，返回 { stdout, stderr, code }
+// 跑 hook 脚本（spawn 子进程），返回 { stdout, stderr, code }
+// 用于 init-project / auto-archive / check-bash-mutation 等 hooks.json 注册的入口
 function runHook(relPath, input, env = {}) {
   const full = path.join(ROOT, relPath);
   const res = cp.spawnSync('node', [full], {
@@ -31,6 +32,46 @@ function runHook(relPath, input, env = {}) {
   });
   return { stdout: res.stdout, stderr: res.stderr, code: res.status };
 }
+
+// 直接调子检查模块（无 spawn，更快）。模拟 spawn 风格的返回方便复用断言。
+// v3.0.0 起，原本 spawn `hooks/check-*.js` 的测试改用此 helper 直接调子检查函数。
+function runCheck(checkFn, input, env = {}) {
+  // 模拟 _hook-runner 的 BYPASS 短路
+  if (env.CLAUDE_DISCIPLINE_BYPASS === '1' || process.env.CLAUDE_DISCIPLINE_BYPASS === '1') {
+    return { stdout: '', stderr: '', code: 0 };
+  }
+  // 设 env（含 CLAUDE_PROJECT_DIR），跑完还原
+  const saved = {};
+  for (const k of Object.keys(env)) { saved[k] = process.env[k]; process.env[k] = env[k]; }
+  const ctx = {
+    input,
+    filePath: input?.tool_input?.file_path || '',
+    sessionId: input?.session_id || '',
+    toolName: input?.tool_name || '',
+    command: input?.tool_input?.command || '',
+    oldString: input?.tool_input?.old_string || '',
+    newString: input?.tool_input?.new_string || '',
+    projectDir: process.env.CLAUDE_PROJECT_DIR || '',
+  };
+  let result;
+  try { result = checkFn(ctx); } catch (e) { result = null; }
+  for (const k of Object.keys(env)) {
+    if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+  }
+  // 模拟 spawn 风格的 stdout：deny → 输出 PreToolUse JSON；warn → 文本；通过 → 空
+  if (result?.denied) {
+    return {
+      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: result.reason } }),
+      stderr: '', code: 0,
+    };
+  }
+  if (result?.warn) return { stdout: result.reason, stderr: '', code: 0 };
+  return { stdout: '', stderr: '', code: 0 };
+}
+
+// 子检查模块（v3.0.0 合并入口的子检查）
+const preChecks = require(path.join(ROOT, 'hooks', '_pre-checks'));
+const postChecks = require(path.join(ROOT, 'hooks', '_post-checks'));
 
 function parseDecision(stdout) {
   if (!stdout.trim()) return null;
@@ -156,7 +197,7 @@ const TODO_MIXED = [
 // B1：handshake—X 会话，X 段未授权 → 拒绝
 {
   writeTodo(TODO_MIXED);
-  const res = runHook('hooks/check-handshake.js', {
+  const res = runCheck(preChecks.handshake, {
     session_id: SID_X,
     tool_input: { file_path: path.join(sandboxProject, 'src', 'app.js') },
   }, SANDBOX_ENV);
@@ -167,7 +208,7 @@ const TODO_MIXED = [
 // B2：handshake—Y 会话，Y 段已授权 → 放行
 {
   writeTodo(TODO_MIXED);
-  const res = runHook('hooks/check-handshake.js', {
+  const res = runCheck(preChecks.handshake, {
     session_id: SID_Y,
     tool_input: { file_path: path.join(sandboxProject, 'src', 'app.js') },
   }, SANDBOX_ENV);
@@ -178,7 +219,7 @@ const TODO_MIXED = [
 // B3：handshake—Z 会话没建任何段 → 拒绝并提示建段
 {
   writeTodo(TODO_MIXED);
-  const res = runHook('hooks/check-handshake.js', {
+  const res = runCheck(preChecks.handshake, {
     session_id: SID_Z,
     tool_input: { file_path: path.join(sandboxProject, 'src', 'app.js') },
   }, SANDBOX_ENV);
@@ -192,7 +233,7 @@ const TODO_MIXED = [
 // B4：handshake—X 编辑白名单文件（比如 research/）→ 放行（白名单优先）
 {
   writeTodo(TODO_MIXED);
-  const res = runHook('hooks/check-handshake.js', {
+  const res = runCheck(preChecks.handshake, {
     session_id: SID_X,
     tool_input: { file_path: path.join(sandboxProject, 'research', 'foo.md') },
   }, SANDBOX_ENV);
@@ -231,7 +272,7 @@ const TODO_ALL_DONE_MIXED = [
 {
   const todoPath = path.join(sandboxProject, 'todo', 'current.md');
   writeTodo(TODO_ALL_DONE_MIXED);
-  const res = runHook('hooks/check-todo-verification.js', {
+  const res = runCheck(postChecks.verification, {
     session_id: SID_X,
     tool_input: { file_path: todoPath },
   }, SANDBOX_ENV);
@@ -249,7 +290,7 @@ const TODO_ALL_DONE_MIXED = [
 {
   const todoPath = path.join(sandboxProject, 'todo', 'current.md');
   writeTodo(TODO_ALL_DONE_MIXED);
-  const res = runHook('hooks/check-todo-verification.js', {
+  const res = runCheck(postChecks.verification, {
     session_id: SID_Z,
     tool_input: { file_path: todoPath },
   }, SANDBOX_ENV);
@@ -265,7 +306,7 @@ const TODO_ALL_DONE_MIXED = [
     `## 2026-04-18 — X 的段 全 [x] 无验算 <!-- session: ${SHORT_X} -->\n\n> ✅ 执行授权：ok\n\n- [x] 子任务 1\n- [x] 子任务 2\n\n> ✅ 验算通过：done\n`
   );
   writeTodo(todoWithXVerif);
-  const res = runHook('hooks/check-todo-verification.js', {
+  const res = runCheck(postChecks.verification, {
     session_id: SID_X,
     tool_input: { file_path: todoPath },
   }, SANDBOX_ENV);
@@ -280,7 +321,7 @@ console.log('\n=== C：禁止 Write 整覆盖 todo/current.md ===');
 
 // C1：Write todo/current.md → deny
 {
-  const res = runHook('hooks/check-todo-write-forbidden.js', {
+  const res = runCheck(preChecks.writeForbidden, {
     tool_name: 'Write',
     tool_input: { file_path: '/some/project/todo/current.md' },
   });
@@ -289,7 +330,7 @@ console.log('\n=== C：禁止 Write 整覆盖 todo/current.md ===');
 
 // C2：Edit todo/current.md → 不拦
 {
-  const res = runHook('hooks/check-todo-write-forbidden.js', {
+  const res = runCheck(preChecks.writeForbidden, {
     tool_name: 'Edit',
     tool_input: { file_path: '/some/project/todo/current.md' },
   });
@@ -298,7 +339,7 @@ console.log('\n=== C：禁止 Write 整覆盖 todo/current.md ===');
 
 // C3：Write 其它文件 → 不拦
 {
-  const res = runHook('hooks/check-todo-write-forbidden.js', {
+  const res = runCheck(preChecks.writeForbidden, {
     tool_name: 'Write',
     tool_input: { file_path: '/some/project/src/app.js' },
   });
@@ -307,7 +348,7 @@ console.log('\n=== C：禁止 Write 整覆盖 todo/current.md ===');
 
 // C4：Windows 路径 /todo/current.md 的反斜杠变体
 {
-  const res = runHook('hooks/check-todo-write-forbidden.js', {
+  const res = runCheck(preChecks.writeForbidden, {
     tool_name: 'Write',
     tool_input: { file_path: 'C:\\proj\\todo\\current.md' },
   });
@@ -411,7 +452,7 @@ function runInitWithTodo(todoContent, sessionId) {
   ].join('\n');
   const { finalTodo } = runInitWithTodo(todo, SID_ADOPT);
   // 现在对非白名单文件做 handshake 检查
-  const hs = runHook('hooks/check-handshake.js', {
+  const hs = runCheck(preChecks.handshake, {
     session_id: SID_ADOPT,
     tool_input: { file_path: path.join(sandboxProject, 'src', 'app.js') },
   }, SANDBOX_ENV);

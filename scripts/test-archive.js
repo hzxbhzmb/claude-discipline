@@ -28,6 +28,40 @@ function runHook(relPath, input, env = {}) {
   return { stdout: res.stdout, stderr: res.stderr, code: res.status };
 }
 
+// 直接调子检查模块（v3.0.0+，不 spawn 进程）
+function runCheck(checkFn, input, env = {}) {
+  if (env.CLAUDE_DISCIPLINE_BYPASS === '1' || process.env.CLAUDE_DISCIPLINE_BYPASS === '1') {
+    return { stdout: '', stderr: '', code: 0 };
+  }
+  const saved = {};
+  for (const k of Object.keys(env)) { saved[k] = process.env[k]; process.env[k] = env[k]; }
+  const ctx = {
+    input,
+    filePath: input?.tool_input?.file_path || '',
+    sessionId: input?.session_id || '',
+    toolName: input?.tool_name || '',
+    command: input?.tool_input?.command || '',
+    oldString: input?.tool_input?.old_string || '',
+    newString: input?.tool_input?.new_string || '',
+    projectDir: process.env.CLAUDE_PROJECT_DIR || '',
+  };
+  let result;
+  try { result = checkFn(ctx); } catch (e) { result = null; }
+  for (const k of Object.keys(env)) {
+    if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+  }
+  if (result?.denied) {
+    return {
+      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: result.reason } }),
+      stderr: '', code: 0,
+    };
+  }
+  if (result?.warn) return { stdout: result.reason, stderr: '', code: 0 };
+  return { stdout: '', stderr: '', code: 0 };
+}
+
+const preChecks = require(path.join(ROOT, 'hooks', '_pre-checks'));
+
 function parseDecision(stdout) {
   if (!stdout.trim()) return null;
   try {
@@ -242,7 +276,7 @@ function lines(n) {
 // 给 hook 喂 PreToolUse Edit 输入，目标文件是 target
 function probeLineCount(target, currentLineCount, env = {}) {
   writeTodo(lines(currentLineCount));
-  return runHook('hooks/check-todo-line-count.js', {
+  return runCheck(preChecks.lineCount, {
     tool_input: { file_path: target },
   }, { ...SANDBOX_ENV, ...env });
 }
@@ -298,7 +332,7 @@ const archiveTarget = path.join(sandboxProject, 'todo', 'archive', '2026-04', '2
 {
   writeTodo(lines(500));
   const outsideFile = '/tmp/outside-project.md';
-  const res = runHook('hooks/check-todo-line-count.js', {
+  const res = runCheck(preChecks.lineCount, {
     tool_input: { file_path: outsideFile },
   }, SANDBOX_ENV);
   record('B8 500 行 / 编辑项目外路径 → 放行', res.stdout.trim() === '');

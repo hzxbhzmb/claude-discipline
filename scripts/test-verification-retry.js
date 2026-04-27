@@ -11,7 +11,7 @@ const cp = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const RESULTS = [];
-const HOOK = path.join(ROOT, 'hooks', 'check-verification-retry-limit.js');
+const postChecks = require(path.join(ROOT, 'hooks', '_post-checks'));
 
 function record(name, passed, detail = '') {
   RESULTS.push({ name, passed, detail });
@@ -19,6 +19,7 @@ function record(name, passed, detail = '') {
   console.log(`${mark} ${name}${detail ? '  — ' + detail : ''}`);
 }
 
+// v3.0.0+：直接调子检查模块（不 spawn 进程）
 function runHook(todoContent, { sessionId = '586ed928abcdefghijklmnop', filePath, env = {} } = {}) {
   // 写沙箱 todo
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-test-'));
@@ -27,21 +28,41 @@ function runHook(todoContent, { sessionId = '586ed928abcdefghijklmnop', filePath
   const todoFile = filePath || path.join(todoDir, 'current.md');
   if (todoContent !== null) fs.writeFileSync(todoFile, todoContent);
 
-  const input = {
-    tool_name: 'Edit',
-    tool_input: { file_path: todoFile, old_string: 'x', new_string: 'y' },
-    session_id: sessionId,
+  // 模拟 _hook-runner 的 BYPASS 短路
+  if (env.CLAUDE_DISCIPLINE_BYPASS === '1' || process.env.CLAUDE_DISCIPLINE_BYPASS === '1') {
+    try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch (e) {}
+    return { stdout: '', stderr: '', code: 0 };
+  }
+
+  // 设 env，跑完还原
+  const saved = {};
+  for (const k of Object.keys(env)) { saved[k] = process.env[k]; process.env[k] = env[k]; }
+
+  const ctx = {
+    input: { tool_name: 'Edit', tool_input: { file_path: todoFile, old_string: 'x', new_string: 'y' }, session_id: sessionId },
+    filePath: todoFile,
+    sessionId,
+    toolName: 'Edit',
+    command: '',
+    oldString: 'x',
+    newString: 'y',
+    projectDir: process.env.CLAUDE_PROJECT_DIR || '',
   };
+  let result;
+  try { result = postChecks.retryLimit(ctx); } catch (e) { result = null; }
 
-  const res = cp.spawnSync('node', [HOOK], {
-    input: JSON.stringify(input),
-    encoding: 'utf8',
-    env: { ...process.env, ...env },
-  });
-
+  for (const k of Object.keys(env)) {
+    if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+  }
   try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch (e) {}
 
-  return { stdout: res.stdout, stderr: res.stderr, code: res.status };
+  if (result?.denied) {
+    return {
+      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', permissionDecision: 'deny', permissionDecisionReason: result.reason } }),
+      stderr: '', code: 0,
+    };
+  }
+  return { stdout: '', stderr: '', code: 0 };
 }
 
 function parseDecision(stdout) {

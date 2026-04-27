@@ -31,6 +31,40 @@ function runHook(rel, input, env = {}) {
   });
   return { stdout: res.stdout, stderr: res.stderr, code: res.status };
 }
+
+// v3.0.0+：直接调子检查模块（不 spawn 进程）
+const preChecks = require(path.join(ROOT, 'hooks', '_pre-checks'));
+const postChecks = require(path.join(ROOT, 'hooks', '_post-checks'));
+
+function runCheck(checkFn, input, env = {}, isPostToolUse = false) {
+  if (env.CLAUDE_DISCIPLINE_BYPASS === '1' || process.env.CLAUDE_DISCIPLINE_BYPASS === '1') {
+    return { stdout: '', stderr: '', code: 0 };
+  }
+  const saved = {};
+  for (const k of Object.keys(env)) { saved[k] = process.env[k]; process.env[k] = env[k]; }
+  const ctx = {
+    input,
+    filePath: input?.tool_input?.file_path || '',
+    sessionId: input?.session_id || '',
+    toolName: input?.tool_name || '',
+    command: input?.tool_input?.command || '',
+    oldString: input?.tool_input?.old_string || '',
+    newString: input?.tool_input?.new_string || '',
+    projectDir: process.env.CLAUDE_PROJECT_DIR || '',
+  };
+  let result;
+  try { result = checkFn(ctx); } catch (e) { result = null; }
+  for (const k of Object.keys(env)) {
+    if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+  }
+  if (result?.denied) {
+    return {
+      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: isPostToolUse ? 'PostToolUse' : 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: result.reason } }),
+      stderr: '', code: 0,
+    };
+  }
+  return { stdout: '', stderr: '', code: 0 };
+}
 function runHookAsync(rel, input, env = {}) {
   return new Promise(resolve => {
     const child = cp.spawn('node', [path.join(ROOT, rel)], {
@@ -156,10 +190,10 @@ console.log(`A shortId=${SHORT_A}  B shortId=${SHORT_B}\n`);
   // ======== 3. 分别对非白名单文件做 Edit → 握手检查应分别放行 ========
   console.log('\n=== 3. 握手检查：两会话分别编辑源文件都应放行 ===');
   const srcPath = path.join(sandboxProject, 'src', 'app.js');
-  const hA = runHook('hooks/check-handshake.js', {
+  const hA = runCheck(preChecks.handshake, {
     session_id: SID_A, tool_input: { file_path: srcPath }
   }, ENV);
-  const hB = runHook('hooks/check-handshake.js', {
+  const hB = runCheck(preChecks.handshake, {
     session_id: SID_B, tool_input: { file_path: srcPath }
   }, ENV);
   rec('3a A 握手检查：放行（自己段已授权）', decision(hA.stdout) === null);
@@ -167,7 +201,7 @@ console.log(`A shortId=${SHORT_A}  B shortId=${SHORT_B}\n`);
 
   // 模拟第三个会话 C 没建段 → 拒绝
   const SID_C = 'ccccccccccccccccc';
-  const hC = runHook('hooks/check-handshake.js', {
+  const hC = runCheck(preChecks.handshake, {
     session_id: SID_C, tool_input: { file_path: srcPath }
   }, ENV);
   rec('3c C 没建段 → deny', decision(hC.stdout) === 'deny');
@@ -191,7 +225,7 @@ console.log(`A shortId=${SHORT_A}  B shortId=${SHORT_B}\n`);
   logEvidence(sandboxTmp, SID_A, { tool: 'Edit', target: todoPath, type: 'write' });
 
   // 对 A 的这次编辑跑 PostToolUse check-todo-verification.js
-  const vA = runHook('hooks/check-todo-verification.js', {
+  const vA = runCheck(postChecks.verification, {
     session_id: SID_A, tool_input: { file_path: todoPath }
   }, ENV);
   // A 段全 [x] 无验算 → A 自己应被 deny 提示写验算；B 段 [ ] 未做完，不应该提 B
@@ -200,7 +234,7 @@ console.log(`A shortId=${SHORT_A}  B shortId=${SHORT_B}\n`);
   rec('5c A 的 verification 文案不提 B 段（不连坐）', !vA.stdout.includes('B 的任务'));
 
   // 对 B（尚未勾完）跑 → B 段还有 [ ]，应放行
-  const vB = runHook('hooks/check-todo-verification.js', {
+  const vB = runCheck(postChecks.verification, {
     session_id: SID_B, tool_input: { file_path: todoPath }
   }, ENV);
   rec('5d B 未勾完 → verification 放行', decision(vB.stdout) === null);
@@ -213,7 +247,7 @@ console.log(`A shortId=${SHORT_A}  B shortId=${SHORT_B}\n`);
     '- [x] A 子任务 1\n\n> ✅ 验算通过：读 src/app.js 看到 // A\n\n'
   );
   logEvidence(sandboxTmp, SID_A, { tool: 'Edit', target: todoPath, type: 'write' });
-  const vA2 = runHook('hooks/check-todo-verification.js', {
+  const vA2 = runCheck(postChecks.verification, {
     session_id: SID_A, tool_input: { file_path: todoPath }
   }, ENV);
   rec('6a A 补验算后 verification 放行', decision(vA2.stdout) === null);
@@ -228,7 +262,7 @@ console.log(`A shortId=${SHORT_A}  B shortId=${SHORT_B}\n`);
     '- [x] B 子任务 1\n\n> ✅ 验算通过：读 src/app.js 看到 // B\n\n'
   );
   logEvidence(sandboxTmp, SID_B, { tool: 'Edit', target: todoPath, type: 'write' });
-  const vBfinal = runHook('hooks/check-todo-verification.js', {
+  const vBfinal = runCheck(postChecks.verification, {
     session_id: SID_B, tool_input: { file_path: todoPath }
   }, ENV);
   rec('7a B 补验算后 verification 放行', decision(vBfinal.stdout) === null);
@@ -273,7 +307,7 @@ console.log(`A shortId=${SHORT_A}  B shortId=${SHORT_B}\n`);
       initRes.stdout.includes('用户升级前的进行中任务'));
 
     // 用户升级后第一个动作：对 src/app.js 做 Edit —— handshake 应直接放行（不需任何手工补标注）
-    const hs = runHook('hooks/check-handshake.js', {
+    const hs = runCheck(preChecks.handshake, {
       session_id: SID_UPG,
       tool_input: { file_path: path.join(upgProj, 'src', 'app.js') },
     }, UPG_ENV);
@@ -284,7 +318,7 @@ console.log(`A shortId=${SHORT_A}  B shortId=${SHORT_B}\n`);
       '- [ ] 未勾子任务 1', '- [x] 未勾子任务 1');
     logEvidence(upgTmp, SID_UPG, { tool: 'Read', target: '/src/app.js', type: 'read' });
     logEvidence(upgTmp, SID_UPG, { tool: 'Edit', target: path.join(upgProj, 'todo', 'current.md'), type: 'write' });
-    const vres = runHook('hooks/check-todo-verification.js', {
+    const vres = runCheck(postChecks.verification, {
       session_id: SID_UPG,
       tool_input: { file_path: path.join(upgProj, 'todo', 'current.md') },
     }, UPG_ENV);
@@ -299,7 +333,7 @@ console.log(`A shortId=${SHORT_A}  B shortId=${SHORT_B}\n`);
 
   // ======== 8. 任一会话试图 Write 整覆盖 → 拒绝 ========
   console.log('\n=== 8. Write 整覆盖 current.md 被拒 ===');
-  const wA = runHook('hooks/check-todo-write-forbidden.js', {
+  const wA = runCheck(preChecks.writeForbidden, {
     tool_name: 'Write', tool_input: { file_path: todoPath }
   });
   rec('8a Write current.md → deny', decision(wA.stdout) === 'deny');
