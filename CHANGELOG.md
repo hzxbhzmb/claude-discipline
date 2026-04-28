@@ -1,5 +1,82 @@
 # Changelog
 
+## 3.1.0 — 强化遵守：威慑首屏 + UserPromptSubmit 主动 inject（2026-04-28）
+
+### 背景
+
+v3.0.x 真实用户实测暴露**根本性遵守问题**：装上 plugin、reload、甚至重启会话后，AI 仍然在对话里做研究、不建任务段、不写 `research/`，直到用户口头敲打才"意识到"。
+
+根因：hook 是**被动反应式**——只在工具调用时介入。AI 用 Read/Grep/Glob（只读豁免）+ 在对话里输出研究结论，**完全绕过所有 hook 强制点**。规则文档说"研究产出必须落到 research/"，但仅靠 AI 读到 + 自觉。
+
+v3.1.0 把"靠 AI 自觉"升级为"系统级 inject"：方向 1（被动看到）+ 方向 2（主动 inject）双管齐下。
+
+### 方向 1：威慑首屏（rules/discipline.md 顶部）
+
+把"严禁的反模式"清单 + BLOCKING REQUIREMENT 警告**搬到文档最顶部**——AI SessionStart 一打开规则文档就看到：
+
+> 🚨 **用户给你任何任务，你的第一个工具调用必须是用 `Edit` 编辑 `todo/current.md`**。完成握手前：
+> - ❌ 不要用 Read/Grep/Glob 探索代码"先做研究"
+> - ❌ 不要在对话里先回答"我打算这么做"
+> - ❌ 不要直接动 Edit/Write/Bash 写项目文件
+> - ❌ 不要把研究/调研/分析的产出只在对话输出
+
+`rules/discipline.md` 仍 ≤140 行（v3.0.0 是 120 行；本次 +20 行威慑首屏）。
+
+### 方向 2：UserPromptSubmit hook（主动 inject）
+
+新增 **`hooks/user-prompt-submit.js`**，注册 `UserPromptSubmit` 事件——每次用户提交新消息时触发，按本会话当前状态决定是否 inject reminder 到 AI 的 system prompt：
+
+| 状态 | 行为 |
+|------|------|
+| 未建本会话段（含只有祖传段 / 只有他会话段） | **inject BLOCKING reminder + 建段模板** |
+| 建段但无 `> ✅ 执行授权` | inject "等待握手完成"提示 |
+| **段已授权且未收尾**（含 `[ ]` 或全 `[x]` 但无 ✅ 验算通过） | **不 inject**（AI 在执行中，规则它已遵守） |
+| 段已收尾（✅ 验算通过 / ❌ 最终验算失败 / ✅ 完成） | inject "新任务请追加新段"提示 |
+| 用户消息含 bypass 措辞（"bypass" / "忽略 discipline" / "紧急"） | 不 inject |
+| `CLAUDE_DISCIPLINE_BYPASS=1` env | 不 inject |
+| `todo/current.md` 不存在 | 不 inject |
+
+**输出格式**：标准 `{ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: '...' } }`，让 Claude Code 把 reminder 注入到下次 AI 响应的 system prompt——AI 看到用户消息**之前**就看到强提醒，注意力优先级最高。
+
+### 测试
+
+新增 **`scripts/test-user-prompt-submit.js`** 共 17 断言（7 分组）：
+- A 组（3）：未建段 / 只有祖传段 / 只有他会话段 → 都 inject
+- B 组（1）：建段无授权 → inject
+- C 组（2）：执行中段 → 不打扰
+- D 组（3）：3 种收尾标记 → inject 提示新建段
+- E 组（2）：bypass 措辞 → 不 inject
+- F 组（3）：todo 缺失 / BYPASS env / 无 sessionId → 不 inject
+- G 组（3）：JSON schema 正确
+
+### 升级影响（v3.0.1 → v3.1.0）
+
+**零动作平滑升级**：
+
+- ✓ 现有任务段格式不变；现有 hook 行为完全不变（PreToolUse / PostToolUse 全保留）
+- ✓ 规则文档主体内容不变，只是顶部加了威慑首屏 + 反模式清单
+- ✓ `/tmp/claude-evidence-*.jsonl` / marker 文件 / `~/.claude-discipline/runtime-*.jsonl` 行为不变
+- ✓ 老用户 `/plugin update` 后 hooks.json 多注册一个 UserPromptSubmit 入口；其它注册项不变
+
+**新增可见行为**（升级后立即生效）：
+
+- 用户每次发新消息时，若本会话未建段 / 未握手 / 段已收尾 → AI 在响应前会看到 BLOCKING reminder
+- 已握手且执行中的 AI 不会被打扰
+- 用户主动写 "bypass" / "紧急" 等措辞可临时跳过
+
+### 回归验证
+
+- `test-user-prompt-submit.js` **17/17** 通过
+- `test-multi-session.js` 33/33 通过
+- `test-bash-mutation.js` 70/70 通过
+- `test-verification-retry.js` 16/16 通过
+- `test-archive.js` 40/40 通过
+- `test-e2e-concurrent.js` 43/43 通过
+- 真机干跑 3 状态：未建段 → inject BLOCKING ✓ / 已授权未收尾 → 静默 ✓ / 段已收尾 → inject 提示 ✓
+- **总测试断言**：219/219
+
+---
+
 ## 3.0.1 — 修死锁：Bash 写白名单文件 + deny 消息明确"用 Edit"（2026-04-28）
 
 ### 背景

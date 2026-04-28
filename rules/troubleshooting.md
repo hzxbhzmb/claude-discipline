@@ -83,6 +83,17 @@ node ${CLAUDE_PLUGIN_ROOT}/scripts/hook-stats.js --by-reason   # 按 deny 原因
 
 子检查可观测性：每个子检查在 runtime-log 里记为 `pre-edit-write:handshake` / `post-edit-write:verification` 等，hook-stats 仍按子检查分桶。
 
+## v3.1.0 升级影响
+
+**零动作平滑升级**。新增 UserPromptSubmit hook（`hooks/user-prompt-submit.js`），每次用户提交新消息时主动 inject reminder 到 AI system prompt：
+
+- 未建本会话段 / 段未握手 / 段已收尾 → inject BLOCKING 提示
+- 段已授权未收尾（执行中）→ 不打扰
+- 用户消息含 `bypass` / `紧急` / `忽略 discipline` → 不 inject
+- `CLAUDE_DISCIPLINE_BYPASS=1` env → 不 inject
+
+`rules/discipline.md` 顶部新增"🚨 BLOCKING REQUIREMENT"威慑首屏 + "严禁的反模式"清单（从底部移到顶部，AI SessionStart 一打开规则就看到）。
+
 ## v3.0.0 升级影响
 
 详见 `CHANGELOG.md` v3.0.0 章节。摘要：

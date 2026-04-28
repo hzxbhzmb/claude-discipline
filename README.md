@@ -258,16 +258,17 @@ export DISCIPLINE_VERIFY_RETRY_LIMIT=5
 
 验算方案在**第二次握手（SYN-ACK）**时就规划好，经用户确认后才执行。
 
-## Hook 一览（v3.0.0+）
+## Hook 一览（v3.1.0+）
 
-`hooks.json` 注册 6 个入口：
+`hooks.json` 注册 7 个入口：
 
 | 入口 | 触发时机 | 内容 |
 |------|---------|------|
 | **init-project** | SessionStart | 初始化目录 + 注入规则 + 注入本会话 sessionId 短 ID + 自动认领祖传段 |
 | **auto-archive** | SessionStart | 把 `todo/current.md` 已完成段搬到 `todo/archive/YYYY-MM/YYYY-MM-DD.md` |
+| **user-prompt-submit** | UserPromptSubmit | 用户每次发新消息时主动 inject reminder（v3.1.0+，未建段/未握手/段已收尾时） |
 | **pre-edit-write**（合并） | PreToolUse Edit/Write | 单 node 进程串行 4 子检查：`handshake` → `methodologyIndex`（软警告） → `writeForbidden` → `lineCount` |
-| **check-bash-mutation** | PreToolUse Bash | Bash 里 mv/sed -i/rm/重定向/git reset --hard 等写操作，无握手授权 → **拒绝**（v2.1.0+） |
+| **check-bash-mutation** | PreToolUse Bash | Bash 里 mv/sed -i/rm/重定向/git reset --hard 等写操作，无握手授权 → **拒绝**（v2.1.0+；v3.0.1+ 白名单文件路径放行） |
 | **log-tool-call** | PostToolUse（所有工具） | 记录工具调用到会话证据日志 `/tmp/claude-evidence-${sessionId}.jsonl` |
 | **post-edit-write**（合并） | PostToolUse Edit/Write | 单 node 进程串行 5 子检查：`markMethodologyIndex` → `acceptance`（软警告） → `verification` → `evidenceOnMark` → `retryLimit` |
 
@@ -304,8 +305,8 @@ export DISCIPLINE_VERIFY_RETRY_LIMIT=5
 claude-discipline/
 ├── .claude-plugin/
 │   └── plugin.json                      # 插件清单
-├── hooks/                               # 10 个 .js 文件，零死代码
-│   ├── hooks.json                       # 注册 6 个入口
+├── hooks/                               # 11 个 .js 文件，零死代码
+│   ├── hooks.json                       # 注册 7 个入口
 │   ├── _hook-runner.js                  # 公共框架：BYPASS / stdin / projectDir / 单一白名单
 │   ├── _runtime-log.js                  # 可观测性：按日分文件写 ~/.claude-discipline/runtime-*.jsonl
 │   ├── _session-util.js                 # 多会话工具：按 session 过滤段 + 祖传段自动认领
@@ -313,7 +314,8 @@ claude-discipline/
 │   ├── _post-checks.js                  # 5 个 PostToolUse Edit/Write 子检查（纯函数）
 │   ├── pre-edit-write.js                # PreToolUse Edit/Write 合并入口（hooks.json 注册）
 │   ├── post-edit-write.js               # PostToolUse Edit/Write 合并入口（hooks.json 注册）
-│   ├── check-bash-mutation.js           # PreToolUse Bash 独立 hook（v2.1.0+）
+│   ├── check-bash-mutation.js           # PreToolUse Bash 独立 hook（v2.1.0+，v3.0.1+ 白名单放行）
+│   ├── user-prompt-submit.js            # UserPromptSubmit 主动 inject reminder（v3.1.0+）
 │   ├── log-tool-call.js                 # PostToolUse 全工具证据日志（按 sessionId 分文件）
 │   └── auto-archive.js                  # SessionStart 自动归档完成段
 ├── rules/                               # 主文件 SessionStart 注入；其它按需读
@@ -326,12 +328,13 @@ claude-discipline/
     ├── migrate-archive-to-daily.js      # 一次性迁移：archive/YYYY-MM.md → archive/YYYY-MM/YYYY-MM-DD.md
     ├── test-multi-session.js            # 单元级反向验证（33 断言）
     ├── test-e2e-concurrent.js           # 端到端并发 + 升级场景 e2e（43 断言）
-    ├── test-bash-mutation.js            # Bash 写保护反向验证（59 断言）
+    ├── test-bash-mutation.js            # Bash 写保护反向验证（70 断言，v3.0.1+ 白名单）
     ├── test-verification-retry.js       # 验算失败上限反向验证（16 断言）
-    └── test-archive.js                  # 归档 + 行数硬阻断反向验证（40 断言）
+    ├── test-archive.js                  # 归档 + 行数硬阻断反向验证（40 断言）
+    └── test-user-prompt-submit.js       # UserPromptSubmit 反向验证（17 断言，v3.1.0+）
 ```
 
-**测试总计 191 断言**（5 套件全过）。
+**测试总计 219 断言**（6 套件全过）。
 **核心收益**：每次 Edit/Write 启动 node 进程数 11 → 2（-82%）。
 
 ## 方法论分级存放
